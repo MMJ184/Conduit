@@ -18,7 +18,12 @@ fn write_global_config(content: &str) -> (tempfile::TempDir, String) {
 }
 
 fn nonexistent_config_path() -> String {
-    "/nonexistent/path/that/does/not/exist/config.toml".to_string()
+    std::env::temp_dir()
+        .join("nonexistent_conduit_xyz_abc123")
+        .join("config.toml")
+        .to_str()
+        .unwrap()
+        .to_string()
 }
 
 // --- help / basic ---
