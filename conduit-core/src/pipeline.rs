@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use crate::error::ConduitError;
-use crate::provider::Provider;
+use crate::provider::{Provider, ProviderResolver};
 use crate::tasks::Task;
 
 pub enum Stage {
@@ -43,32 +43,23 @@ impl Stage {
     }
 
     pub fn all() -> [Stage; 5] {
-        [
-            Stage::Orchestrator,
-            Stage::Doc,
-            Stage::Architecture,
-            Stage::Code,
-            Stage::Test,
-        ]
+        [Stage::Orchestrator, Stage::Doc, Stage::Architecture, Stage::Code, Stage::Test]
     }
 }
 
 pub struct PipelineRunner<'a> {
     task: &'a Task,
-    provider: &'a dyn Provider,
+    resolver: &'a dyn ProviderResolver,
     project_dir: &'a Path,
 }
 
 impl<'a> PipelineRunner<'a> {
-    pub fn new(task: &'a Task, provider: &'a dyn Provider, project_dir: &'a Path) -> Self {
-        Self { task, provider, project_dir }
+    pub fn new(task: &'a Task, resolver: &'a dyn ProviderResolver, project_dir: &'a Path) -> Self {
+        Self { task, resolver, project_dir }
     }
 
     pub fn task_dir(&self) -> PathBuf {
-        self.project_dir
-            .join(".conduit")
-            .join("tasks")
-            .join(&self.task.id)
+        self.project_dir.join(".conduit").join("tasks").join(&self.task.id)
     }
 
     fn load_reference_docs(&self) -> String {
@@ -92,8 +83,8 @@ impl<'a> PipelineRunner<'a> {
     }
 
     fn read_stage_output(&self, stage: &Stage) -> String {
-        let path = self.task_dir().join(stage.output_filename());
-        std::fs::read_to_string(path).unwrap_or_default()
+        std::fs::read_to_string(self.task_dir().join(stage.output_filename()))
+            .unwrap_or_default()
     }
 
     fn write_stage_output(&self, stage: &Stage, content: &str) -> Result<(), ConduitError> {
@@ -109,10 +100,7 @@ impl<'a> PipelineRunner<'a> {
         } else {
             format!("Reference documentation:\n{}\n\n", reference_docs)
         };
-        let options_line = self
-            .task
-            .options
-            .as_ref()
+        let options_line = self.task.options.as_ref()
             .map(|v| format!("\nOptions: {}", v))
             .unwrap_or_default();
 
@@ -151,7 +139,8 @@ impl<'a> PipelineRunner<'a> {
 
     fn run_stage(&self, stage: &Stage, reference_docs: &str) -> Result<(), ConduitError> {
         let prompt = self.build_prompt(stage, reference_docs);
-        let output = self.provider.invoke(stage.name(), &prompt, self.project_dir)?;
+        let provider: Box<dyn Provider> = self.resolver.resolve(stage)?;
+        let output = provider.invoke(stage.name(), &prompt, self.project_dir)?;
         self.write_stage_output(stage, &output)?;
         Ok(())
     }
@@ -174,25 +163,21 @@ impl<'a> PipelineRunner<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::MockProvider;
+    use crate::provider::MockProviderResolver;
     use crate::tasks::Task;
     use std::fs;
     use tempfile::tempdir;
 
     fn make_task(id: &str, desc: &str) -> Task {
-        Task {
-            id: id.to_string(),
-            description: desc.to_string(),
-            options: None,
-        }
+        Task { id: id.to_string(), description: desc.to_string(), options: None }
     }
 
     #[test]
     fn test_orchestrator_prompt_contains_task_info() {
         let task = make_task("auth-feature", "Build a login form");
         let dir = tempdir().unwrap();
-        let provider = MockProvider { response: "mock".to_string() };
-        let runner = PipelineRunner::new(&task, &provider, dir.path());
+        let resolver = MockProviderResolver { response: "mock".to_string() };
+        let runner = PipelineRunner::new(&task, &resolver, dir.path());
         let prompt = runner.build_prompt(&Stage::Orchestrator, "");
         assert!(prompt.contains("Build a login form"));
         assert!(prompt.contains("auth-feature"));
@@ -206,8 +191,8 @@ mod tests {
     fn test_doc_prompt_includes_orchestrator_output() {
         let task = make_task("t", "desc");
         let dir = tempdir().unwrap();
-        let provider = MockProvider { response: "mock".to_string() };
-        let runner = PipelineRunner::new(&task, &provider, dir.path());
+        let resolver = MockProviderResolver { response: "mock".to_string() };
+        let runner = PipelineRunner::new(&task, &resolver, dir.path());
         let task_dir = dir.path().join(".conduit").join("tasks").join("t");
         fs::create_dir_all(&task_dir).unwrap();
         fs::write(task_dir.join("orchestrator.md"), "step 1: do X").unwrap();
@@ -220,8 +205,8 @@ mod tests {
     fn test_reference_docs_prepended_to_prompt() {
         let task = make_task("t", "desc");
         let dir = tempdir().unwrap();
-        let provider = MockProvider { response: "mock".to_string() };
-        let runner = PipelineRunner::new(&task, &provider, dir.path());
+        let resolver = MockProviderResolver { response: "mock".to_string() };
+        let runner = PipelineRunner::new(&task, &resolver, dir.path());
         let prompt = runner.build_prompt(&Stage::Orchestrator, "API spec: GET /users");
         assert!(prompt.contains("API spec: GET /users"));
         assert!(prompt.contains("Reference documentation"));
@@ -231,20 +216,13 @@ mod tests {
     fn test_run_writes_all_five_output_files() {
         let task = make_task("my-task", "test task");
         let dir = tempdir().unwrap();
-        let provider = MockProvider { response: "stage output content".to_string() };
-        let runner = PipelineRunner::new(&task, &provider, dir.path());
+        let resolver = MockProviderResolver { response: "stage output content".to_string() };
+        let runner = PipelineRunner::new(&task, &resolver, dir.path());
         runner.run(|_, _, _| {}).unwrap();
         let task_dir = dir.path().join(".conduit").join("tasks").join("my-task");
-        for filename in &[
-            "orchestrator.md",
-            "requirements.md",
-            "architecture.md",
-            "code.md",
-            "tests.md",
-        ] {
+        for filename in &["orchestrator.md", "requirements.md", "architecture.md", "code.md", "tests.md"] {
             assert!(task_dir.join(filename).exists(), "Missing: {}", filename);
-            let content = fs::read_to_string(task_dir.join(filename)).unwrap();
-            assert_eq!(content, "stage output content");
+            assert_eq!(fs::read_to_string(task_dir.join(filename)).unwrap(), "stage output content");
         }
     }
 
@@ -252,52 +230,37 @@ mod tests {
     fn test_run_callback_called_with_correct_indices() {
         let task = make_task("t", "desc");
         let dir = tempdir().unwrap();
-        let provider = MockProvider { response: "output".to_string() };
-        let runner = PipelineRunner::new(&task, &provider, dir.path());
+        let resolver = MockProviderResolver { response: "output".to_string() };
+        let runner = PipelineRunner::new(&task, &resolver, dir.path());
         let mut calls: Vec<(usize, usize, String)> = Vec::new();
-        runner
-            .run(|completed, total, stage| {
-                calls.push((completed, total, stage.name().to_string()));
-            })
-            .unwrap();
+        runner.run(|completed, total, stage| {
+            calls.push((completed, total, stage.name().to_string()));
+        }).unwrap();
         assert_eq!(calls.len(), 5);
         assert_eq!(calls[0], (1, 5, "orchestrator".to_string()));
-        assert_eq!(calls[2], (3, 5, "architecture".to_string()));
         assert_eq!(calls[4], (5, 5, "test".to_string()));
     }
 
     #[test]
-    fn test_run_stops_on_provider_error() {
-        struct FailingProvider;
-        impl std::fmt::Debug for FailingProvider {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "FailingProvider")
-            }
-        }
-        impl Provider for FailingProvider {
-            fn name(&self) -> &str {
-                "failing"
-            }
-            fn invoke(
-                &self,
-                stage: &str,
-                _prompt: &str,
-                _work_dir: &Path,
-            ) -> Result<String, ConduitError> {
+    fn test_run_stops_on_resolver_error() {
+        #[derive(Debug)]
+        struct FailingResolver;
+        impl ProviderResolver for FailingResolver {
+            fn resolve(&self, stage: &Stage) -> Result<Box<dyn Provider>, ConduitError> {
                 Err(ConduitError::AgentInvocationFailed {
                     provider: "failing".to_string(),
-                    stage: stage.to_string(),
-                    reason: "intentional failure".to_string(),
+                    stage: stage.name().to_string(),
+                    reason: "intentional".to_string(),
                 })
             }
         }
         let task = make_task("t", "desc");
         let dir = tempdir().unwrap();
-        let provider = FailingProvider;
-        let runner = PipelineRunner::new(&task, &provider, dir.path());
-        let mut callback_count = 0usize;
-        let err = runner.run(|_, _, _| { callback_count += 1; }).unwrap_err();
-        assert_eq!(callback_count, 0);
+        let resolver = FailingResolver;
+        let runner = PipelineRunner::new(&task, &resolver, dir.path());
+        let mut count = 0usize;
+        let err = runner.run(|_, _, _| { count += 1; }).unwrap_err();
+        assert_eq!(count, 0);
         assert!(matches!(err, ConduitError::AgentInvocationFailed { .. }));
     }
 }

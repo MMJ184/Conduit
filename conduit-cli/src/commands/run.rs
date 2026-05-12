@@ -4,7 +4,7 @@ use conduit_core::{
     config::load_config,
     error::ConduitError,
     pipeline::PipelineRunner,
-    provider::select_provider,
+    provider::ProfileResolver,
     tasks::load_tasks,
 };
 use std::path::Path;
@@ -20,11 +20,14 @@ pub fn run(dir: &Path, task_id: Option<&str>) -> Result<()> {
     }
 
     let config = load_config(dir)?;
-    let provider = select_provider(&config)?;
+    let profile = config.profile.first()
+        .ok_or(ConduitError::NoProviderAvailable)?
+        .clone();
+    let resolver = ProfileResolver { profile: &profile, config: &config };
 
     for task in &tasks {
         println!("{} {}", "[running]".cyan().bold(), task.id.bold());
-        let runner = PipelineRunner::new(task, provider.as_ref(), dir);
+        let runner = PipelineRunner::new(task, &resolver, dir);
         let result = runner.run(|completed, total, stage| {
             println!(
                 "  [{}/{}] {}  {}",
