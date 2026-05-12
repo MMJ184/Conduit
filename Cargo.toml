@@ -1,0 +1,3 @@
+[workspace]
+members = ["conduit-core", "conduit-cli"]
+resolver = "2"
