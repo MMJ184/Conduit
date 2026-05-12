@@ -339,7 +339,7 @@ provider = "fake-account"
         .assert()
         .failure()
         .stderr(predicates::str::contains("No AI provider available"))
-        .stdout(predicates::str::contains("Results:"));
+        .stdout(predicates::str::contains("[task-a] running..."));
 }
 
 #[test]
