@@ -14,6 +14,10 @@ pub enum ConduitError {
     TaskNotFound(String),
     #[error("Duplicate task id `{0}` in tasks.toml")]
     DuplicateTaskId(String),
+    #[error("No AI provider available. Run `conduit init` to configure one.")]
+    NoProviderAvailable,
+    #[error("Agent `{provider}` failed at stage `{stage}`: {reason}")]
+    AgentInvocationFailed { provider: String, stage: String, reason: String },
 }
 
 #[cfg(test)]
@@ -36,5 +40,23 @@ mod tests {
     fn test_task_not_found_message() {
         let e = ConduitError::TaskNotFound("my-task".to_string());
         assert!(e.to_string().contains("my-task"));
+    }
+
+    #[test]
+    fn test_no_provider_available_message() {
+        let e = ConduitError::NoProviderAvailable;
+        assert!(e.to_string().contains("No AI provider available"));
+    }
+
+    #[test]
+    fn test_agent_invocation_failed_message() {
+        let e = ConduitError::AgentInvocationFailed {
+            provider: "claude".to_string(),
+            stage: "doc".to_string(),
+            reason: "binary not found".to_string(),
+        };
+        assert!(e.to_string().contains("claude"));
+        assert!(e.to_string().contains("doc"));
+        assert!(e.to_string().contains("binary not found"));
     }
 }
