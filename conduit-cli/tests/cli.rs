@@ -1,9 +1,27 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
+use std::fs;
+use tempfile::tempdir;
 
 fn conduit() -> Command {
     Command::cargo_bin("conduit").unwrap()
 }
+
+// Helper: write global config to a temp file and return (TempDir, path string)
+// Caller must keep TempDir alive for the duration of the test
+fn write_global_config(content: &str) -> (tempfile::TempDir, String) {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("global.toml");
+    fs::write(&path, content).unwrap();
+    let path_str = path.to_str().unwrap().to_string();
+    (dir, path_str)
+}
+
+fn nonexistent_config_path() -> String {
+    "/nonexistent/path/that/does/not/exist/config.toml".to_string()
+}
+
+// --- help / basic ---
 
 #[test]
 fn test_help_exits_zero() {
@@ -15,8 +33,7 @@ fn test_no_args_fails() {
     conduit().assert().failure();
 }
 
-use tempfile::tempdir;
-use std::fs;
+// --- validate ---
 
 #[test]
 fn test_validate_valid_tasks() {
@@ -57,44 +74,19 @@ fn test_validate_bad_toml() {
         .stderr(predicates::str::contains("Failed to parse"));
 }
 
+// --- run ---
+
 #[test]
-fn test_run_requires_config() {
+fn test_run_missing_tasks_file() {
     let dir = tempdir().unwrap();
-    fs::write(dir.path().join("tasks.toml"), r#"
-[[task]]
-id = "task-a"
-description = "First task"
-"#).unwrap();
+    let (_cfg_dir, cfg_path) = write_global_config("");
     conduit()
         .arg("run")
         .current_dir(dir.path())
+        .env("CONDUIT_GLOBAL_CONFIG", &cfg_path)
         .assert()
         .failure()
-        .stderr(predicates::str::contains("config.toml not found"));
-}
-
-#[test]
-fn test_run_no_provider_available() {
-    let dir = tempdir().unwrap();
-    fs::write(dir.path().join("tasks.toml"), r#"
-[[task]]
-id = "task-a"
-description = "First task"
-"#).unwrap();
-    write_config(dir.path(), r#"
-[project]
-name = "test"
-
-[[ai_account]]
-provider = "nonexistent-ai-xyz"
-api_key = "sk-test"
-"#);
-    conduit()
-        .arg("run")
-        .current_dir(dir.path())
-        .assert()
-        .failure()
-        .stderr(predicates::str::contains("No AI provider available"));
+        .stderr(predicates::str::contains("tasks.toml not found"));
 }
 
 #[test]
@@ -105,77 +97,179 @@ fn test_run_unknown_task_id() {
 id = "task-a"
 description = "First task"
 "#).unwrap();
+    let (_cfg_dir, cfg_path) = write_global_config("");
     conduit()
         .arg("run")
         .arg("--task")
         .arg("nonexistent")
         .current_dir(dir.path())
+        .env("CONDUIT_GLOBAL_CONFIG", &cfg_path)
         .assert()
         .failure()
         .stderr(predicates::str::contains("nonexistent"));
 }
 
 #[test]
-fn test_run_missing_tasks_file() {
+fn test_run_requires_global_config() {
     let dir = tempdir().unwrap();
+    fs::write(dir.path().join("tasks.toml"), r#"
+[[task]]
+id = "task-a"
+description = "First task"
+"#).unwrap();
     conduit()
         .arg("run")
+        .arg("--profile")
+        .arg("anything")
         .current_dir(dir.path())
-        .assert()
-        .failure()
-        .stderr(predicates::str::contains("tasks.toml not found"));
-}
-
-fn write_config(dir: &std::path::Path, content: &str) {
-    let conduit_dir = dir.join(".conduit");
-    fs::create_dir_all(&conduit_dir).unwrap();
-    fs::write(conduit_dir.join("config.toml"), content).unwrap();
-}
-
-#[test]
-fn test_status_with_config() {
-    let dir = tempdir().unwrap();
-    write_config(dir.path(), r#"
-[project]
-name = "test-project"
-
-[[ai_account]]
-provider = "claude"
-api_key = "sk-test"
-daily_limit_usd = 10.0
-"#);
-    conduit()
-        .arg("status")
-        .current_dir(dir.path())
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("test-project"))
-        .stdout(predicates::str::contains("claude"))
-        .stdout(predicates::str::contains("$10.00"));
-}
-
-#[test]
-fn test_status_no_config() {
-    let dir = tempdir().unwrap();
-    conduit()
-        .arg("status")
-        .current_dir(dir.path())
+        .env("CONDUIT_GLOBAL_CONFIG", nonexistent_config_path())
         .assert()
         .failure()
         .stderr(predicates::str::contains("config.toml not found"));
 }
 
 #[test]
-fn test_status_no_accounts() {
+fn test_run_no_providers_configured() {
     let dir = tempdir().unwrap();
-    write_config(dir.path(), r#"
-[project]
-name = "empty-project"
+    fs::write(dir.path().join("tasks.toml"), r#"
+[[task]]
+id = "task-a"
+description = "First task"
+"#).unwrap();
+    let (_cfg_dir, cfg_path) = write_global_config(""); // empty config = no accounts
+    conduit()
+        .arg("run")
+        .arg("--profile")
+        .arg("anything")
+        .current_dir(dir.path())
+        .env("CONDUIT_GLOBAL_CONFIG", &cfg_path)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("No providers configured"));
+}
+
+#[test]
+fn test_run_profile_not_found() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("tasks.toml"), r#"
+[[task]]
+id = "task-a"
+description = "First task"
+"#).unwrap();
+    let (_cfg_dir, cfg_path) = write_global_config(r#"
+[[ai_account]]
+name = "claude-work"
+provider = "claude"
+"#);
+    conduit()
+        .arg("run")
+        .arg("--profile")
+        .arg("nonexistent-profile")
+        .current_dir(dir.path())
+        .env("CONDUIT_GLOBAL_CONFIG", &cfg_path)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("nonexistent-profile"));
+}
+
+#[test]
+fn test_run_no_provider_available() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("tasks.toml"), r#"
+[[task]]
+id = "task-a"
+description = "First task"
+"#).unwrap();
+    let (_cfg_dir, cfg_path) = write_global_config(r#"
+[[ai_account]]
+name = "fake-account"
+provider = "nonexistent-ai-xyz-12345"
+
+[[profile]]
+name = "fake-profile"
+provider = "fake-account"
+"#);
+    conduit()
+        .arg("run")
+        .arg("--profile")
+        .arg("fake-profile")
+        .current_dir(dir.path())
+        .env("CONDUIT_GLOBAL_CONFIG", &cfg_path)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("No AI provider available"));
+}
+
+// --- status ---
+
+#[test]
+fn test_status_no_config() {
+    conduit()
+        .arg("status")
+        .env("CONDUIT_GLOBAL_CONFIG", nonexistent_config_path())
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("config.toml not found"));
+}
+
+#[test]
+fn test_status_shows_accounts() {
+    let (_cfg_dir, cfg_path) = write_global_config(r#"
+[[ai_account]]
+name = "claude-work"
+provider = "claude"
+daily_limit_usd = 10.0
 "#);
     conduit()
         .arg("status")
-        .current_dir(dir.path())
+        .env("CONDUIT_GLOBAL_CONFIG", &cfg_path)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("claude-work"))
+        .stdout(predicates::str::contains("$10.00"));
+}
+
+#[test]
+fn test_status_no_accounts() {
+    let (_cfg_dir, cfg_path) = write_global_config("");
+    conduit()
+        .arg("status")
+        .env("CONDUIT_GLOBAL_CONFIG", &cfg_path)
         .assert()
         .success()
         .stdout(predicates::str::contains("none configured"));
+}
+
+// --- providers ---
+
+#[test]
+fn test_providers_list_no_config() {
+    conduit()
+        .arg("providers")
+        .arg("list")
+        .env("CONDUIT_GLOBAL_CONFIG", nonexistent_config_path())
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("config.toml not found"));
+}
+
+#[test]
+fn test_providers_list_shows_accounts_and_profiles() {
+    let (_cfg_dir, cfg_path) = write_global_config(r#"
+[[ai_account]]
+name = "claude-work"
+provider = "claude"
+
+[[profile]]
+name = "all-claude"
+provider = "claude-work"
+"#);
+    conduit()
+        .arg("providers")
+        .arg("list")
+        .env("CONDUIT_GLOBAL_CONFIG", &cfg_path)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("claude-work"))
+        .stdout(predicates::str::contains("all-claude"));
 }
