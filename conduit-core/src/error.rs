@@ -30,6 +30,8 @@ pub enum ConduitError {
     ProfileIncomplete(String),
     #[error("Failed to serialize config: {0}")]
     ConfigSerializeError(String),
+    #[error("All accounts exhausted for stage `{stage}`: every configured account is over its limit or failed")]
+    AllAccountsExhausted { stage: String },
 }
 
 #[cfg(test)]
@@ -82,5 +84,13 @@ mod tests {
         };
         assert!(e.to_string().contains("bad-account"));
         assert!(e.to_string().contains("my-profile"));
+    }
+
+    #[test]
+    fn test_all_accounts_exhausted_message() {
+        let e = ConduitError::AllAccountsExhausted { stage: "doc".to_string() };
+        let msg = e.to_string();
+        assert!(msg.contains("doc"));
+        assert!(msg.contains("exhausted") || msg.contains("All accounts"));
     }
 }
