@@ -1,0 +1,10 @@
+[[task]]
+id = "hello-world"
+description = "Create a hello world Rust program"
+
+[[task]]
+id = "add-readme"
+description = "Write a README.md for the project"
+
+[task.options]
+output_dir = "."
