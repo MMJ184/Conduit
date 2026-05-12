@@ -278,3 +278,97 @@ provider = "claude-work"
         .stdout(predicates::str::contains("claude-work"))
         .stdout(predicates::str::contains("all-claude"));
 }
+
+// --- parallel / concurrency ---
+
+#[test]
+fn test_run_concurrency_zero_rejected() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("tasks.toml"), r#"
+[[task]]
+id = "task-a"
+description = "First task"
+"#).unwrap();
+    let (_cfg_dir, cfg_path) = write_global_config(r#"
+[[ai_account]]
+name = "fake-account"
+provider = "nonexistent-ai-xyz-12345"
+
+[[profile]]
+name = "fake-profile"
+provider = "fake-account"
+"#);
+    conduit()
+        .arg("run")
+        .arg("--profile").arg("fake-profile")
+        .arg("--concurrency").arg("0")
+        .current_dir(dir.path())
+        .env("CONDUIT_GLOBAL_CONFIG", &cfg_path)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("--concurrency must be at least 1"));
+}
+
+#[test]
+fn test_run_concurrency_2_two_tasks_both_fail() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("tasks.toml"), r#"
+[[task]]
+id = "task-a"
+description = "First task"
+
+[[task]]
+id = "task-b"
+description = "Second task"
+"#).unwrap();
+    let (_cfg_dir, cfg_path) = write_global_config(r#"
+[[ai_account]]
+name = "fake-account"
+provider = "nonexistent-ai-xyz-12345"
+
+[[profile]]
+name = "fake-profile"
+provider = "fake-account"
+"#);
+    conduit()
+        .arg("run")
+        .arg("--profile").arg("fake-profile")
+        .arg("--concurrency").arg("2")
+        .current_dir(dir.path())
+        .env("CONDUIT_GLOBAL_CONFIG", &cfg_path)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("No AI provider available"));
+}
+
+#[test]
+fn test_run_concurrency_1_two_tasks_sequential() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("tasks.toml"), r#"
+[[task]]
+id = "task-a"
+description = "First task"
+
+[[task]]
+id = "task-b"
+description = "Second task"
+"#).unwrap();
+    let (_cfg_dir, cfg_path) = write_global_config(r#"
+[[ai_account]]
+name = "fake-account"
+provider = "nonexistent-ai-xyz-12345"
+
+[[profile]]
+name = "fake-profile"
+provider = "fake-account"
+"#);
+    conduit()
+        .arg("run")
+        .arg("--profile").arg("fake-profile")
+        .arg("--concurrency").arg("1")
+        .current_dir(dir.path())
+        .env("CONDUIT_GLOBAL_CONFIG", &cfg_path)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("No AI provider available"));
+}
