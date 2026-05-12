@@ -130,3 +130,57 @@ fn test_run_missing_tasks_file() {
         .failure()
         .stderr(predicates::str::contains("tasks.toml not found"));
 }
+
+fn write_config(dir: &std::path::Path, content: &str) {
+    let conduit_dir = dir.join(".conduit");
+    fs::create_dir_all(&conduit_dir).unwrap();
+    fs::write(conduit_dir.join("config.toml"), content).unwrap();
+}
+
+#[test]
+fn test_status_with_config() {
+    let dir = tempdir().unwrap();
+    write_config(dir.path(), r#"
+[project]
+name = "test-project"
+
+[[ai_account]]
+provider = "claude"
+api_key = "sk-test"
+daily_limit_usd = 10.0
+"#);
+    conduit()
+        .arg("status")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("test-project"))
+        .stdout(predicates::str::contains("claude"))
+        .stdout(predicates::str::contains("$10.00"));
+}
+
+#[test]
+fn test_status_no_config() {
+    let dir = tempdir().unwrap();
+    conduit()
+        .arg("status")
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("config.toml not found"));
+}
+
+#[test]
+fn test_status_no_accounts() {
+    let dir = tempdir().unwrap();
+    write_config(dir.path(), r#"
+[project]
+name = "empty-project"
+"#);
+    conduit()
+        .arg("status")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("none configured"));
+}
