@@ -374,3 +374,73 @@ provider = "fake-account"
         .stderr(predicates::str::contains("No AI provider available"))
         .stdout(predicates::str::contains("[running]"));
 }
+
+// --- run --account ---
+
+#[test]
+fn test_run_account_not_found_fails_before_loading_tasks() {
+    let dir = tempdir().unwrap();
+    // No tasks.toml — proves we fail before loading tasks
+    let (_cfg_dir, cfg_path) = write_global_config(r#"
+[[ai_account]]
+name = "real-account"
+provider = "claude"
+
+[[profile]]
+name = "p"
+provider = "real-account"
+"#);
+    conduit()
+        .arg("run")
+        .arg("--account")
+        .arg("nonexistent-account")
+        .arg("--profile")
+        .arg("p")
+        .current_dir(dir.path())
+        .env("CONDUIT_GLOBAL_CONFIG", &cfg_path)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("nonexistent-account"))
+        .stderr(predicates::str::contains("not found"));
+}
+
+#[test]
+fn test_run_account_flag_validates_before_task_loading() {
+    // Same account-not-found error even when tasks.toml is missing (proves early exit)
+    let dir = tempdir().unwrap();
+    let (_cfg_dir, cfg_path) = write_global_config(r#"
+[[ai_account]]
+name = "claude-work"
+provider = "claude"
+"#);
+    conduit()
+        .arg("run")
+        .arg("--account")
+        .arg("does-not-exist")
+        .current_dir(dir.path())
+        .env("CONDUIT_GLOBAL_CONFIG", &cfg_path)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("does-not-exist"));
+}
+
+#[test]
+fn test_status_shows_auto_switch_field() {
+    let (_cfg_dir, cfg_path) = write_global_config(r#"
+[[ai_account]]
+name = "claude-work"
+provider = "claude"
+daily_limit_usd = 10.0
+auto_switch = true
+switch_on = "both"
+cost_per_run = 0.05
+"#);
+    conduit()
+        .arg("status")
+        .env("CONDUIT_GLOBAL_CONFIG", &cfg_path)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("claude-work"))
+        .stdout(predicates::str::contains("auto-switch: both"))
+        .stdout(predicates::str::contains("$10.00/day"));
+}
