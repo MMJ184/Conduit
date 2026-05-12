@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::Result;
 use colored::Colorize;
 use conduit_core::config::{
     global_config_path, load_global_config, save_global_config, AIAccount, Config, Defaults,

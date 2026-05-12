@@ -3,7 +3,7 @@ use colored::Colorize;
 use conduit_core::config::{
     global_config_path, load_global_config, save_global_config, AIAccount,
 };
-use dialoguer::{Confirm, Input, Select};
+use dialoguer::{Input, Select};
 use std::process::Command;
 
 const PROVIDER_BINARIES: &[(&str, &str, &[&str])] = &[
