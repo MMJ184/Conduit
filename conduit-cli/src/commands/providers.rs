@@ -90,13 +90,63 @@ pub fn add() -> Result<()> {
         break name;
     };
 
+    // --- Phase 5: auto-switch prompts ---
+    let enable_auto_switch = Select::new()
+        .with_prompt("Enable auto-switch for this account?")
+        .items(&["No", "Yes"])
+        .default(0)
+        .interact()?;
+
+    let (auto_switch, switch_on, daily_limit_usd, cost_per_run) = if enable_auto_switch == 0 {
+        (Some(false), None, None, None)
+    } else {
+        let switch_options = [
+            "On error (provider CLI fails)",
+            "On daily limit (estimated spend reaches daily_limit_usd)",
+            "Both",
+        ];
+        let switch_idx = Select::new()
+            .with_prompt("Switch when?")
+            .items(&switch_options)
+            .default(0)
+            .interact()?;
+
+        let switch_on_str = match switch_idx {
+            0 => "error",
+            1 => "limit",
+            _ => "both",
+        };
+
+        let needs_cost = switch_idx == 1 || switch_idx == 2;
+
+        let daily_limit = if needs_cost {
+            let limit_str: String = Input::new()
+                .with_prompt("Daily limit (USD, e.g. 10.0)")
+                .interact_text()?;
+            limit_str.parse::<f64>().ok()
+        } else {
+            None
+        };
+
+        let cost = if needs_cost {
+            let cost_str: String = Input::new()
+                .with_prompt("Estimated cost per stage run (USD, e.g. 0.05)")
+                .interact_text()?;
+            cost_str.parse::<f64>().ok()
+        } else {
+            None
+        };
+
+        (Some(true), Some(switch_on_str.to_string()), daily_limit, cost)
+    };
+
     config.ai_account.push(AIAccount {
         name: name.clone(),
         provider: provider_type.to_string(),
-        daily_limit_usd: None,
-        auto_switch: None,
-        switch_on: None,
-        cost_per_run: None,
+        daily_limit_usd,
+        auto_switch,
+        switch_on,
+        cost_per_run,
     });
 
     save_global_config(&config)?;
