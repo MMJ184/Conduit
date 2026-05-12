@@ -338,7 +338,8 @@ provider = "fake-account"
         .env("CONDUIT_GLOBAL_CONFIG", &cfg_path)
         .assert()
         .failure()
-        .stderr(predicates::str::contains("No AI provider available"));
+        .stderr(predicates::str::contains("No AI provider available"))
+        .stdout(predicates::str::contains("Results:"));
 }
 
 #[test]
@@ -370,5 +371,6 @@ provider = "fake-account"
         .env("CONDUIT_GLOBAL_CONFIG", &cfg_path)
         .assert()
         .failure()
-        .stderr(predicates::str::contains("No AI provider available"));
+        .stderr(predicates::str::contains("No AI provider available"))
+        .stdout(predicates::str::contains("[running]"));
 }
