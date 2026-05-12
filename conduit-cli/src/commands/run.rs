@@ -24,20 +24,8 @@ pub fn run(
         anyhow::bail!("--concurrency must be at least 1");
     }
 
-    let mut tasks = load_tasks(dir)?;
-
-    if let Some(id) = task_id {
-        tasks.retain(|t| t.id == id);
-        if tasks.is_empty() {
-            return Err(ConduitError::TaskNotFound(id.to_string()).into());
-        }
-    }
-
+    // Load config first so we can validate --account before loading tasks
     let config = load_global_config()?;
-
-    if config.ai_account.is_empty() {
-        return Err(ConduitError::NoProvidersConfigured.into());
-    }
 
     // Validate --account before loading tasks (fast fail with clear error)
     if let Some(acc_name) = account {
@@ -47,6 +35,19 @@ pub fn run(
                 acc_name
             );
         }
+    }
+
+    let mut tasks = load_tasks(dir)?;
+
+    if let Some(id) = task_id {
+        tasks.retain(|t| t.id == id);
+        if tasks.is_empty() {
+            return Err(ConduitError::TaskNotFound(id.to_string()).into());
+        }
+    }
+
+    if config.ai_account.is_empty() {
+        return Err(ConduitError::NoProvidersConfigured.into());
     }
 
     let profile = if let Some(name) = profile_name {
