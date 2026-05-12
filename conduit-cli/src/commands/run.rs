@@ -9,7 +9,7 @@ use conduit_core::{
 };
 use std::path::Path;
 
-pub fn run(dir: &Path, task_id: Option<&str>) -> Result<()> {
+pub fn run(dir: &Path, task_id: Option<&str>, _profile_name: Option<&str>) -> Result<()> {
     let mut tasks = load_tasks(dir)?;
 
     if let Some(id) = task_id {

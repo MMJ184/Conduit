@@ -1,11 +1,9 @@
 use anyhow::Result;
 use colored::Colorize;
-use conduit_core::config::load_config;
-use std::path::Path;
+use conduit_core::config::load_global_config;
 
-pub fn run(dir: &Path) -> Result<()> {
-    let config = load_config(dir)?;
-    println!("Project: {}", config.project.name.bold());
+pub fn run() -> Result<()> {
+    let config = load_global_config()?;
     println!("\nAI Accounts:");
     if config.ai_account.is_empty() {
         println!("  (none configured)");
@@ -15,7 +13,7 @@ pub fn run(dir: &Path) -> Result<()> {
                 .daily_limit_usd
                 .map(|l| format!("${:.2}/day", l))
                 .unwrap_or_else(|| "no limit".to_string());
-            println!("  {} — {}", account.provider.cyan(), limit);
+            println!("  {} ({}) — {}", account.name.bold(), account.provider.cyan(), limit);
         }
     }
     let ollama_status = if config.ollama.enabled {
