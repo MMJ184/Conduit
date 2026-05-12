@@ -120,7 +120,10 @@ pub fn load_config(_dir: &Path) -> Result<Config, ConduitError> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::Mutex;
     use tempfile::tempdir;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn with_temp_config(content: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempdir().unwrap();
@@ -131,6 +134,7 @@ mod tests {
 
     #[test]
     fn test_global_config_path_from_env() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let (_dir, path) = with_temp_config("");
         std::env::set_var("CONDUIT_GLOBAL_CONFIG", path.to_str().unwrap());
         let result = global_config_path().unwrap();
@@ -140,6 +144,7 @@ mod tests {
 
     #[test]
     fn test_load_global_config_not_found() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let dir = tempdir().unwrap();
         let path = dir.path().join("nonexistent.toml");
         std::env::set_var("CONDUIT_GLOBAL_CONFIG", path.to_str().unwrap());
@@ -150,6 +155,7 @@ mod tests {
 
     #[test]
     fn test_load_global_config_parses_accounts_and_profiles() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let (_dir, path) = with_temp_config(r#"
 [[ai_account]]
 name = "claude-work"
@@ -171,6 +177,7 @@ provider = "claude-work"
 
     #[test]
     fn test_save_and_reload_global_config() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let dir = tempdir().unwrap();
         let path = dir.path().join("config.toml");
         std::env::set_var("CONDUIT_GLOBAL_CONFIG", path.to_str().unwrap());
