@@ -58,48 +58,43 @@ fn test_validate_bad_toml() {
 }
 
 #[test]
-fn test_run_all_tasks() {
+fn test_run_requires_config() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("tasks.toml"), r#"
 [[task]]
 id = "task-a"
 description = "First task"
-
-[[task]]
-id = "task-b"
-description = "Second task"
 "#).unwrap();
     conduit()
         .arg("run")
         .current_dir(dir.path())
         .assert()
-        .success()
-        .stdout(predicates::str::contains("[queued]"))
-        .stdout(predicates::str::contains("task-a"))
-        .stdout(predicates::str::contains("task-b"));
+        .failure()
+        .stderr(predicates::str::contains("config.toml not found"));
 }
 
 #[test]
-fn test_run_single_task() {
+fn test_run_no_provider_available() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("tasks.toml"), r#"
 [[task]]
 id = "task-a"
 description = "First task"
-
-[[task]]
-id = "task-b"
-description = "Second task"
 "#).unwrap();
+    write_config(dir.path(), r#"
+[project]
+name = "test"
+
+[[ai_account]]
+provider = "nonexistent-ai-xyz"
+api_key = "sk-test"
+"#);
     conduit()
         .arg("run")
-        .arg("--task")
-        .arg("task-a")
         .current_dir(dir.path())
         .assert()
-        .success()
-        .stdout(predicates::str::contains("task-a"))
-        .stdout(predicates::str::contains("task-b").not());
+        .failure()
+        .stderr(predicates::str::contains("No AI provider available"));
 }
 
 #[test]
