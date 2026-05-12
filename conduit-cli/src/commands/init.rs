@@ -1,8 +1,11 @@
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 use colored::Colorize;
-use conduit_core::config::{AIAccount, Config, OllamaConfig, ProjectConfig};
-use dialoguer::{Input, MultiSelect};
+use conduit_core::config::{
+    global_config_path, load_global_config, save_global_config, AIAccount, Config, Defaults,
+};
+use dialoguer::{Confirm, Input, Select};
 use std::path::Path;
+use std::process::Command;
 
 const STARTER_TASKS: &str = r#"[[task]]
 id = "hello-world"
@@ -12,24 +15,151 @@ description = "Create a hello world example"
 # [[task]]
 # id = "my-feature"
 # description = "Describe what you want to build"
-#
-# [task.options]
-# language = "rust"
-# output_dir = "src"
 "#;
 
-pub fn check_no_existing_config(dir: &Path, force: bool) -> Result<()> {
-    let config_path = dir.join(".conduit").join("config.toml");
+const PROVIDERS: &[(&str, &str, &[&str])] = &[
+    ("Claude (claude CLI)", "claude", &["auth", "login"]),
+    ("OpenAI Codex (codex CLI)", "openai", &["login"]),
+    ("Google Gemini (gemini CLI)", "gemini", &["auth", "login"]),
+];
+
+pub fn run(dir: &Path, force: bool) -> Result<()> {
+    let config_path = global_config_path()?;
+
     if config_path.exists() && !force {
-        bail!(".conduit/config.toml already exists. Use --force to overwrite.");
+        println!(
+            "{} Global config found at {}",
+            "✓".green(),
+            config_path.display()
+        );
+        create_project_conduit_dir(dir)?;
+        write_starter_tasks(dir)?;
+        println!("{} Project folder .conduit/ ready.", "✓".green());
+        println!("\nRun {} to get started.", "`conduit validate`".cyan());
+        return Ok(());
     }
+
+    println!("{}", "Conduit Init".bold());
+    println!("Setting up global config at {}\n", config_path.display());
+
+    let mut config = if config_path.exists() && force {
+        load_global_config().unwrap_or_default()
+    } else {
+        Config::default()
+    };
+
+    for (label, provider_type, login_args) in PROVIDERS {
+        let binary = match *provider_type {
+            "openai" => "codex",
+            other => other,
+        };
+
+        if which::which(binary).is_err() {
+            println!("{} {} not found on PATH — skipping.", "✗".dimmed(), label);
+            continue;
+        }
+
+        let configure = Confirm::new()
+            .with_prompt(format!("Configure {}?", label))
+            .default(true)
+            .interact()?;
+
+        if !configure {
+            continue;
+        }
+
+        println!("Opening {} login...", label.cyan());
+        let status = Command::new(binary)
+            .args(*login_args)
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .status()?;
+
+        if !status.success() {
+            println!("{} Login failed — skipping {}.", "✗".yellow(), label);
+            continue;
+        }
+
+        loop {
+            let name: String = Input::new()
+                .with_prompt("Account name (e.g. \"work\", \"personal\")")
+                .interact_text()?;
+
+            if name.is_empty() {
+                println!("Name cannot be empty.");
+                continue;
+            }
+            if config.ai_account.iter().any(|a| a.name == name) {
+                println!("Account name '{}' already exists. Choose a different name.", name);
+                continue;
+            }
+
+            config.ai_account.push(AIAccount {
+                name,
+                provider: provider_type.to_string(),
+                daily_limit_usd: None,
+            });
+            break;
+        }
+
+        let add_another = Confirm::new()
+            .with_prompt(format!("Add another {} account?", label))
+            .default(false)
+            .interact()?;
+
+        if add_another {
+            println!("Opening {} login again...", label.cyan());
+            let status2 = Command::new(binary)
+                .args(*login_args)
+                .stdin(std::process::Stdio::inherit())
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .status()?;
+
+            if status2.success() {
+                loop {
+                    let name: String = Input::new()
+                        .with_prompt("Account name for second account")
+                        .interact_text()?;
+                    if name.is_empty() { continue; }
+                    if config.ai_account.iter().any(|a| a.name == name) {
+                        println!("Name '{}' already exists.", name);
+                        continue;
+                    }
+                    config.ai_account.push(AIAccount {
+                        name,
+                        provider: provider_type.to_string(),
+                        daily_limit_usd: None,
+                    });
+                    break;
+                }
+            }
+        }
+    }
+
+    if !config.ai_account.is_empty() {
+        let names: Vec<&str> = config.ai_account.iter().map(|a| a.name.as_str()).collect();
+        let idx = Select::new()
+            .with_prompt("Default orchestrator account")
+            .items(&names)
+            .default(0)
+            .interact()?;
+        config.defaults = Defaults { orchestrator: Some(names[idx].to_string()) };
+    }
+
+    save_global_config(&config)?;
+    println!("\n{} Global config saved to {}", "✓".green(), config_path.display());
+
+    create_project_conduit_dir(dir)?;
+    write_starter_tasks(dir)?;
+    println!("{} Project folder .conduit/ created.", "✓".green());
+    println!("\nRun {} to get started.", "`conduit validate`".cyan());
     Ok(())
 }
 
-pub fn write_config_file(dir: &Path, config: &Config) -> Result<()> {
-    let toml_str = toml::to_string_pretty(config)?;
+fn create_project_conduit_dir(dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir.join(".conduit"))?;
-    std::fs::write(dir.join(".conduit").join("config.toml"), toml_str)?;
     Ok(())
 }
 
@@ -41,190 +171,24 @@ pub fn write_starter_tasks(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn parse_limit(s: &str) -> Result<Option<f64>> {
-    if s.is_empty() {
-        return Ok(None);
-    }
-    s.parse::<f64>()
-        .map(Some)
-        .map_err(|_| anyhow!("Invalid daily limit '{}': expected a number like 10 or 9.99", s))
-}
-
-pub fn run(dir: &Path, force: bool) -> Result<()> {
-    check_no_existing_config(dir, force)?;
-
-    println!("{}", "Conduit Init".bold());
-    println!("Setting up your project...\n");
-
-    let default_name = dir
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
-
-    let name: String = Input::new()
-        .with_prompt("Project name")
-        .default(default_name)
-        .interact_text()?;
-
-    let providers = &[
-        "Claude (Anthropic)",
-        "OpenAI Codex",
-        "Google Gemini",
-        "Ollama (local)",
-    ];
-    let selections = MultiSelect::new()
-        .with_prompt("Which AI providers do you want to configure? (Space to select, Enter to confirm)")
-        .items(providers)
-        .interact()?;
-
-    let mut ai_accounts: Vec<AIAccount> = Vec::new();
-    let mut ollama = OllamaConfig::default();
-
-    for &i in &selections {
-        match i {
-            0 => {
-                let key: String = Input::new()
-                    .with_prompt("Claude API key")
-                    .interact_text()?;
-                let limit: String = Input::new()
-                    .with_prompt("Daily limit USD (leave blank for none)")
-                    .allow_empty(true)
-                    .interact_text()?;
-                ai_accounts.push(AIAccount {
-                    provider: "claude".to_string(),
-                    api_key: key,
-                    daily_limit_usd: parse_limit(&limit)?,
-                });
-            }
-            1 => {
-                let key: String = Input::new()
-                    .with_prompt("OpenAI API key")
-                    .interact_text()?;
-                let limit: String = Input::new()
-                    .with_prompt("Daily limit USD (leave blank for none)")
-                    .allow_empty(true)
-                    .interact_text()?;
-                ai_accounts.push(AIAccount {
-                    provider: "openai".to_string(),
-                    api_key: key,
-                    daily_limit_usd: parse_limit(&limit)?,
-                });
-            }
-            2 => {
-                let key: String = Input::new()
-                    .with_prompt("Gemini API key")
-                    .interact_text()?;
-                let limit: String = Input::new()
-                    .with_prompt("Daily limit USD (leave blank for none)")
-                    .allow_empty(true)
-                    .interact_text()?;
-                ai_accounts.push(AIAccount {
-                    provider: "gemini".to_string(),
-                    api_key: key,
-                    daily_limit_usd: parse_limit(&limit)?,
-                });
-            }
-            3 => {
-                let url: String = Input::new()
-                    .with_prompt("Ollama base URL")
-                    .default("http://localhost:11434".to_string())
-                    .interact_text()?;
-                ollama = OllamaConfig {
-                    enabled: true,
-                    base_url: url,
-                };
-            }
-            _ => {}
-        }
-    }
-
-    let config = Config {
-        project: ProjectConfig { name },
-        ai_account: ai_accounts,
-        ollama,
-    };
-
-    write_config_file(dir, &config)?;
-    let tasks_existed = dir.join("tasks.toml").exists();
-    write_starter_tasks(dir)?;
-
-    println!("\n{} Created .conduit/config.toml", "✓".green());
-    if !tasks_existed {
-        println!("{} Created tasks.toml (starter template)", "✓".green());
-    }
-    println!(
-        "\n{} .conduit/config.toml contains API keys — make sure it is in your .gitignore.",
-        "Warning:".yellow().bold()
-    );
-    println!("\nRun {} to get started.", "`conduit validate`".cyan());
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use conduit_core::config::{AIAccount, Config, OllamaConfig, ProjectConfig};
     use tempfile::tempdir;
+    use std::fs;
 
     #[test]
-    fn test_write_config_creates_file() {
+    fn test_write_starter_tasks_creates_file() {
         let dir = tempdir().unwrap();
-        let config = Config {
-            project: ProjectConfig { name: "test".to_string() },
-            ai_account: vec![AIAccount {
-                provider: "claude".to_string(),
-                api_key: "sk-test".to_string(),
-                daily_limit_usd: Some(10.0),
-            }],
-            ollama: OllamaConfig::default(),
-        };
-        write_config_file(dir.path(), &config).unwrap();
-        let written = std::fs::read_to_string(
-            dir.path().join(".conduit").join("config.toml"),
-        ).unwrap();
-        assert!(written.contains("claude"));
-        assert!(written.contains("sk-test"));
-    }
-
-    #[test]
-    fn test_write_config_creates_conduit_dir() {
-        let dir = tempdir().unwrap();
-        let config = Config {
-            project: ProjectConfig { name: "test".to_string() },
-            ai_account: vec![],
-            ollama: OllamaConfig::default(),
-        };
-        write_config_file(dir.path(), &config).unwrap();
-        assert!(dir.path().join(".conduit").is_dir());
+        write_starter_tasks(dir.path()).unwrap();
+        assert!(dir.path().join("tasks.toml").exists());
     }
 
     #[test]
     fn test_write_starter_tasks_skips_if_exists() {
         let dir = tempdir().unwrap();
-        let tasks_path = dir.path().join("tasks.toml");
-        std::fs::write(&tasks_path, "existing content").unwrap();
+        fs::write(dir.path().join("tasks.toml"), "existing").unwrap();
         write_starter_tasks(dir.path()).unwrap();
-        let content = std::fs::read_to_string(&tasks_path).unwrap();
-        assert_eq!(content, "existing content");
-    }
-
-    #[test]
-    fn test_init_fails_if_config_exists_without_force() {
-        let dir = tempdir().unwrap();
-        let conduit_dir = dir.path().join(".conduit");
-        std::fs::create_dir_all(&conduit_dir).unwrap();
-        std::fs::write(conduit_dir.join("config.toml"), "existing").unwrap();
-        let err = check_no_existing_config(dir.path(), false).unwrap_err();
-        assert!(err.to_string().contains("already exists"));
-    }
-
-    #[test]
-    fn test_init_succeeds_with_force() {
-        let dir = tempdir().unwrap();
-        let conduit_dir = dir.path().join(".conduit");
-        std::fs::create_dir_all(&conduit_dir).unwrap();
-        std::fs::write(conduit_dir.join("config.toml"), "existing").unwrap();
-        check_no_existing_config(dir.path(), true).unwrap();
+        assert_eq!(fs::read_to_string(dir.path().join("tasks.toml")).unwrap(), "existing");
     }
 }
