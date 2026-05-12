@@ -19,6 +19,27 @@ pub struct AIAccount {
     pub name: String,
     pub provider: String,
     pub daily_limit_usd: Option<f64>,
+    pub auto_switch: Option<bool>,
+    pub switch_on: Option<String>,
+    pub cost_per_run: Option<f64>,
+}
+
+impl AIAccount {
+    pub fn auto_switch_enabled(&self) -> bool {
+        self.auto_switch.unwrap_or(false)
+    }
+
+    pub fn switch_on_error(&self) -> bool {
+        matches!(self.switch_on.as_deref(), Some("error") | Some("both") | None)
+            && self.auto_switch_enabled()
+    }
+
+    pub fn switch_on_limit(&self) -> bool {
+        matches!(self.switch_on.as_deref(), Some("limit") | Some("both"))
+            && self.auto_switch_enabled()
+            && self.cost_per_run.is_some()
+            && self.daily_limit_usd.is_some()
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
@@ -186,6 +207,9 @@ provider = "claude-work"
                 name: "my-claude".to_string(),
                 provider: "claude".to_string(),
                 daily_limit_usd: None,
+                auto_switch: None,
+                switch_on: None,
+                cost_per_run: None,
             }],
             ..Config::default()
         };
@@ -219,6 +243,92 @@ provider = "claude-work"
         };
         assert_eq!(profile.account_for_stage("orchestrator"), Some("claude-work"));
         assert_eq!(profile.account_for_stage("code"), Some("codex-main"));
+    }
+
+    #[test]
+    fn test_ai_account_auto_switch_enabled_defaults_false() {
+        let a = AIAccount {
+            name: "a".to_string(), provider: "claude".to_string(),
+            daily_limit_usd: None, auto_switch: None, switch_on: None, cost_per_run: None,
+        };
+        assert!(!a.auto_switch_enabled());
+    }
+
+    #[test]
+    fn test_ai_account_auto_switch_enabled_true() {
+        let a = AIAccount {
+            name: "a".to_string(), provider: "claude".to_string(),
+            daily_limit_usd: None, auto_switch: Some(true), switch_on: None, cost_per_run: None,
+        };
+        assert!(a.auto_switch_enabled());
+    }
+
+    #[test]
+    fn test_ai_account_switch_on_error_defaults_true_when_auto_switch_enabled() {
+        let a = AIAccount {
+            name: "a".to_string(), provider: "claude".to_string(),
+            daily_limit_usd: None, auto_switch: Some(true), switch_on: None, cost_per_run: None,
+        };
+        assert!(a.switch_on_error());
+    }
+
+    #[test]
+    fn test_ai_account_switch_on_error_false_when_auto_switch_disabled() {
+        let a = AIAccount {
+            name: "a".to_string(), provider: "claude".to_string(),
+            daily_limit_usd: None, auto_switch: Some(false), switch_on: Some("error".to_string()), cost_per_run: None,
+        };
+        assert!(!a.switch_on_error());
+    }
+
+    #[test]
+    fn test_ai_account_switch_on_error_false_when_switch_on_limit() {
+        let a = AIAccount {
+            name: "a".to_string(), provider: "claude".to_string(),
+            daily_limit_usd: None, auto_switch: Some(true), switch_on: Some("limit".to_string()), cost_per_run: None,
+        };
+        assert!(!a.switch_on_error());
+    }
+
+    #[test]
+    fn test_ai_account_switch_on_limit_true_when_all_set() {
+        let a = AIAccount {
+            name: "a".to_string(), provider: "claude".to_string(),
+            daily_limit_usd: Some(10.0), auto_switch: Some(true),
+            switch_on: Some("limit".to_string()), cost_per_run: Some(0.1),
+        };
+        assert!(a.switch_on_limit());
+    }
+
+    #[test]
+    fn test_ai_account_switch_on_limit_false_when_cost_per_run_missing() {
+        let a = AIAccount {
+            name: "a".to_string(), provider: "claude".to_string(),
+            daily_limit_usd: Some(10.0), auto_switch: Some(true),
+            switch_on: Some("limit".to_string()), cost_per_run: None,
+        };
+        assert!(!a.switch_on_limit());
+    }
+
+    #[test]
+    fn test_ai_account_switch_on_limit_false_when_daily_limit_missing() {
+        let a = AIAccount {
+            name: "a".to_string(), provider: "claude".to_string(),
+            daily_limit_usd: None, auto_switch: Some(true),
+            switch_on: Some("limit".to_string()), cost_per_run: Some(0.1),
+        };
+        assert!(!a.switch_on_limit());
+    }
+
+    #[test]
+    fn test_ai_account_switch_on_both_enables_error_and_limit() {
+        let a = AIAccount {
+            name: "a".to_string(), provider: "claude".to_string(),
+            daily_limit_usd: Some(5.0), auto_switch: Some(true),
+            switch_on: Some("both".to_string()), cost_per_run: Some(0.1),
+        };
+        assert!(a.switch_on_error());
+        assert!(a.switch_on_limit());
     }
 
     #[test]

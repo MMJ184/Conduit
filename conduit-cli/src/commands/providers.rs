@@ -94,6 +94,9 @@ pub fn add() -> Result<()> {
         name: name.clone(),
         provider: provider_type.to_string(),
         daily_limit_usd: None,
+        auto_switch: None,
+        switch_on: None,
+        cost_per_run: None,
     });
 
     save_global_config(&config)?;

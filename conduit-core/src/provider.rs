@@ -144,6 +144,9 @@ mod tests {
                 name: account_name.to_string(),
                 provider: provider.to_string(),
                 daily_limit_usd: None,
+                auto_switch: None,
+                switch_on: None,
+                cost_per_run: None,
             }],
             ..Config::default()
         }
