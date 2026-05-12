@@ -25,6 +25,8 @@ enum Commands {
         profile: Option<String>,
         #[arg(long, help = "Maximum number of tasks to run simultaneously (default: all)")]
         concurrency: Option<usize>,
+        #[arg(long, help = "Override starting account for all stages")]
+        account: Option<String>,
     },
     /// Validate tasks.toml without running
     Validate,
@@ -68,7 +70,9 @@ fn run() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Init { force } => commands::init::run(&cwd, force),
-        Commands::Run { task, profile, concurrency } => commands::run::run(&cwd, task.as_deref(), profile.as_deref(), concurrency),
+        Commands::Run { task, profile, concurrency, account } => {
+            commands::run::run(&cwd, task.as_deref(), profile.as_deref(), concurrency, account.as_deref())
+        }
         Commands::Validate => commands::validate::run(&cwd),
         Commands::Status => commands::status::run(),
         Commands::Providers { command } => match command {

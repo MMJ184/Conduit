@@ -5,14 +5,21 @@ use conduit_core::{
     error::ConduitError,
     parallel::{ParallelRunner, TaskEvent},
     pipeline::PipelineRunner,
-    provider::ProfileResolver,
+    provider::FallbackResolver,
+    spend::SpendTracker,
     tasks::load_tasks,
 };
 use dialoguer::{Input, Select};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-pub fn run(dir: &Path, task_id: Option<&str>, profile_name: Option<&str>, concurrency: Option<usize>) -> Result<()> {
+pub fn run(
+    dir: &Path,
+    task_id: Option<&str>,
+    profile_name: Option<&str>,
+    concurrency: Option<usize>,
+    account: Option<&str>,
+) -> Result<()> {
     if let Some(0) = concurrency {
         anyhow::bail!("--concurrency must be at least 1");
     }
@@ -32,6 +39,16 @@ pub fn run(dir: &Path, task_id: Option<&str>, profile_name: Option<&str>, concur
         return Err(ConduitError::NoProvidersConfigured.into());
     }
 
+    // Validate --account before loading tasks (fast fail with clear error)
+    if let Some(acc_name) = account {
+        if !config.ai_account.iter().any(|a| a.name == acc_name) {
+            anyhow::bail!(
+                "Account '{}' not found. Run `conduit providers list` to see available accounts.",
+                acc_name
+            );
+        }
+    }
+
     let profile = if let Some(name) = profile_name {
         config
             .profile
@@ -43,7 +60,12 @@ pub fn run(dir: &Path, task_id: Option<&str>, profile_name: Option<&str>, concur
         select_profile_interactive(&config)?
     };
 
-    let resolver = ProfileResolver { profile: &profile, config: &config };
+    // Load spend tracker; fall back to in-memory if file unreadable
+    let spend = Arc::new(Mutex::new(
+        SpendTracker::load().unwrap_or_else(|_| SpendTracker::new_empty()),
+    ));
+
+    let resolver = FallbackResolver::new(&profile, &config, Arc::clone(&spend), account);
     let concurrency = concurrency.unwrap_or(tasks.len().max(1));
     let use_parallel = tasks.len() > 1 && concurrency > 1;
 

@@ -99,6 +99,9 @@ pub fn run(dir: &Path, force: bool) -> Result<()> {
                 name,
                 provider: provider_type.to_string(),
                 daily_limit_usd: None,
+                auto_switch: None,
+                switch_on: None,
+                cost_per_run: None,
             });
             break;
         }
@@ -131,6 +134,9 @@ pub fn run(dir: &Path, force: bool) -> Result<()> {
                         name,
                         provider: provider_type.to_string(),
                         daily_limit_usd: None,
+                        auto_switch: None,
+                        switch_on: None,
+                        cost_per_run: None,
                     });
                     break;
                 }
