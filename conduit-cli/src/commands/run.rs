@@ -10,7 +10,11 @@ use conduit_core::{
 use dialoguer::{Input, Select};
 use std::path::Path;
 
-pub fn run(dir: &Path, task_id: Option<&str>, profile_name: Option<&str>) -> Result<()> {
+pub fn run(dir: &Path, task_id: Option<&str>, profile_name: Option<&str>, concurrency: Option<usize>) -> Result<()> {
+    if let Some(0) = concurrency {
+        anyhow::bail!("--concurrency must be at least 1");
+    }
+
     let mut tasks = load_tasks(dir)?;
 
     if let Some(id) = task_id {

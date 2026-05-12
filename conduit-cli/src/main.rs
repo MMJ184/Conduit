@@ -23,6 +23,8 @@ enum Commands {
         task: Option<String>,
         #[arg(long, help = "Use a named run profile (skips interactive selection)")]
         profile: Option<String>,
+        #[arg(long, help = "Maximum number of tasks to run simultaneously (default: all)")]
+        concurrency: Option<usize>,
     },
     /// Validate tasks.toml without running
     Validate,
@@ -66,7 +68,7 @@ fn run() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Init { force } => commands::init::run(&cwd, force),
-        Commands::Run { task, profile } => commands::run::run(&cwd, task.as_deref(), profile.as_deref()),
+        Commands::Run { task, profile, concurrency } => commands::run::run(&cwd, task.as_deref(), profile.as_deref(), concurrency),
         Commands::Validate => commands::validate::run(&cwd),
         Commands::Status => commands::status::run(),
         Commands::Providers { command } => match command {
