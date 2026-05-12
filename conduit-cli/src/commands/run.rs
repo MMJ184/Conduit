@@ -3,12 +3,14 @@ use colored::Colorize;
 use conduit_core::{
     config::{load_global_config, save_global_config, Config, Profile},
     error::ConduitError,
+    parallel::{ParallelRunner, TaskEvent},
     pipeline::PipelineRunner,
     provider::ProfileResolver,
     tasks::load_tasks,
 };
 use dialoguer::{Input, Select};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 pub fn run(dir: &Path, task_id: Option<&str>, profile_name: Option<&str>, concurrency: Option<usize>) -> Result<()> {
     if let Some(0) = concurrency {
@@ -42,21 +44,50 @@ pub fn run(dir: &Path, task_id: Option<&str>, profile_name: Option<&str>, concur
     };
 
     let resolver = ProfileResolver { profile: &profile, config: &config };
+    let concurrency = concurrency.unwrap_or(tasks.len().max(1));
+    let use_parallel = tasks.len() > 1 && concurrency > 1;
 
-    for task in &tasks {
-        println!("{} {}", "[running]".cyan().bold(), task.id.bold());
-        let runner = PipelineRunner::new(task, &resolver, dir);
-        let result = runner.run(|completed, total, stage| {
-            println!(
-                "  [{}/{}] {}  {}",
-                completed, total, stage.display_name(), "✓".green()
-            );
+    if use_parallel {
+        let print_lock = Arc::new(Mutex::new(()));
+        let runner = ParallelRunner::new(&tasks, &resolver, dir, concurrency);
+        let results = runner.run(|event| {
+            let _guard = print_lock.lock().unwrap();
+            match event {
+                TaskEvent::Started(id) => println!("[{}] running...", id),
+                TaskEvent::StageComplete { task_id, completed, total, stage } => {
+                    println!("[{}]   [{}/{}] {}  {}", task_id, completed, total, stage, "✓".green());
+                }
+                TaskEvent::Finished(id) => {
+                    println!("[{}] {} {}", id, "done".green().bold(), "✓".green());
+                }
+                TaskEvent::Failed { task_id, error } => {
+                    eprintln!("[{}] {}  {}", task_id, "✗".red(), error);
+                }
+            }
         });
-        match result {
-            Ok(()) => println!("{} {}", "[done]".green().bold(), task.id.bold()),
-            Err(e) => {
-                eprintln!("  {} {}", "✗".red(), e);
-                return Err(e.into());
+
+        let failed_count = results.iter().filter(|r| r.error.is_some()).count();
+        let completed_count = results.len() - failed_count;
+        if failed_count > 0 {
+            println!("\nResults: {} completed, {} failed.", completed_count, failed_count);
+            anyhow::bail!("{} task(s) failed", failed_count);
+        }
+    } else {
+        for task in &tasks {
+            println!("{} {}", "[running]".cyan().bold(), task.id.bold());
+            let runner = PipelineRunner::new(task, &resolver, dir);
+            let result = runner.run(|completed, total, stage| {
+                println!(
+                    "  [{}/{}] {}  {}",
+                    completed, total, stage.display_name(), "✓".green()
+                );
+            });
+            match result {
+                Ok(()) => println!("{} {}", "[done]".green().bold(), task.id.bold()),
+                Err(e) => {
+                    eprintln!("  {} {}", "✗".red(), e);
+                    return Err(e.into());
+                }
             }
         }
     }
