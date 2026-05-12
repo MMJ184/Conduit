@@ -11,7 +11,7 @@ fn test_help_exits_zero() {
 }
 
 #[test]
-fn test_no_args_shows_help() {
+fn test_no_args_fails() {
     conduit().assert().failure();
 }
 

@@ -12,6 +12,8 @@ pub enum ConduitError {
     Io(#[from] std::io::Error),
     #[error("Task `{0}` not found in tasks.toml")]
     TaskNotFound(String),
+    #[error("Duplicate task id `{0}` in tasks.toml")]
+    DuplicateTaskId(String),
 }
 
 #[cfg(test)]

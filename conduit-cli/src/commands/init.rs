@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use colored::Colorize;
 use conduit_core::config::{AIAccount, Config, OllamaConfig, ProjectConfig};
 use dialoguer::{Input, MultiSelect};
@@ -39,6 +39,15 @@ pub fn write_starter_tasks(dir: &Path) -> Result<()> {
         std::fs::write(&tasks_path, STARTER_TASKS)?;
     }
     Ok(())
+}
+
+fn parse_limit(s: &str) -> Result<Option<f64>> {
+    if s.is_empty() {
+        return Ok(None);
+    }
+    s.parse::<f64>()
+        .map(Some)
+        .map_err(|_| anyhow!("Invalid daily limit '{}': expected a number like 10 or 9.99", s))
 }
 
 pub fn run(dir: &Path, force: bool) -> Result<()> {
@@ -85,7 +94,7 @@ pub fn run(dir: &Path, force: bool) -> Result<()> {
                 ai_accounts.push(AIAccount {
                     provider: "claude".to_string(),
                     api_key: key,
-                    daily_limit_usd: limit.parse().ok(),
+                    daily_limit_usd: parse_limit(&limit)?,
                 });
             }
             1 => {
@@ -99,7 +108,7 @@ pub fn run(dir: &Path, force: bool) -> Result<()> {
                 ai_accounts.push(AIAccount {
                     provider: "openai".to_string(),
                     api_key: key,
-                    daily_limit_usd: limit.parse().ok(),
+                    daily_limit_usd: parse_limit(&limit)?,
                 });
             }
             2 => {
@@ -113,7 +122,7 @@ pub fn run(dir: &Path, force: bool) -> Result<()> {
                 ai_accounts.push(AIAccount {
                     provider: "gemini".to_string(),
                     api_key: key,
-                    daily_limit_usd: limit.parse().ok(),
+                    daily_limit_usd: parse_limit(&limit)?,
                 });
             }
             3 => {
@@ -144,6 +153,10 @@ pub fn run(dir: &Path, force: bool) -> Result<()> {
     if !tasks_existed {
         println!("{} Created tasks.toml (starter template)", "✓".green());
     }
+    println!(
+        "\n{} .conduit/config.toml contains API keys — make sure it is in your .gitignore.",
+        "Warning:".yellow().bold()
+    );
     println!("\nRun {} to get started.", "`conduit validate`".cyan());
     Ok(())
 }
