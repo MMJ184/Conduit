@@ -9,7 +9,7 @@ pub trait Provider: Send + Sync + std::fmt::Debug {
     fn invoke(&self, stage: &str, prompt: &str, work_dir: &Path) -> Result<String, ConduitError>;
 }
 
-pub trait ProviderResolver: std::fmt::Debug {
+pub trait ProviderResolver: std::fmt::Debug + Send + Sync {
     fn resolve(&self, stage: &Stage) -> Result<Box<dyn Provider>, ConduitError>;
 }
 
@@ -193,5 +193,11 @@ mod tests {
         let provider = resolver.resolve(&Stage::Orchestrator).unwrap();
         let result = provider.invoke("orchestrator", "prompt", dir.path()).unwrap();
         assert_eq!(result, "hello from mock");
+    }
+
+    #[test]
+    fn test_provider_resolver_send_sync() {
+        fn assert_send_sync<T: ?Sized + Send + Sync>() {}
+        assert_send_sync::<dyn ProviderResolver>();
     }
 }
