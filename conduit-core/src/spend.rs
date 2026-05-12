@@ -32,8 +32,17 @@ impl SpendTracker {
             return Ok(Self { path, data: BTreeMap::new() });
         }
         let content = fs::read_to_string(&path)?;
-        let data: BTreeMap<String, HashMap<String, u64>> =
-            toml::from_str(&content).unwrap_or_default();
+        let data: BTreeMap<String, HashMap<String, u64>> = match toml::from_str(&content) {
+            Ok(d) => d,
+            Err(_) => {
+                eprintln!(
+                    "warning: spend.toml is corrupt or unreadable — spend history reset. \
+                     Check {}",
+                    path.display()
+                );
+                BTreeMap::new()
+            }
+        };
         Ok(Self { path, data })
     }
 

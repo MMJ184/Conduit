@@ -120,19 +120,29 @@ pub fn add() -> Result<()> {
         let needs_cost = switch_idx == 1 || switch_idx == 2;
 
         let daily_limit = if needs_cost {
-            let limit_str: String = Input::new()
-                .with_prompt("Daily limit (USD, e.g. 10.0)")
-                .interact_text()?;
-            limit_str.parse::<f64>().ok()
+            Some(loop {
+                let s: String = Input::new()
+                    .with_prompt("Daily limit (USD, e.g. 10.0)")
+                    .interact_text()?;
+                match s.parse::<f64>() {
+                    Ok(v) if v > 0.0 => break v,
+                    _ => println!("Enter a positive number (e.g. 10.0)."),
+                }
+            })
         } else {
             None
         };
 
         let cost = if needs_cost {
-            let cost_str: String = Input::new()
-                .with_prompt("Estimated cost per stage run (USD, e.g. 0.05)")
-                .interact_text()?;
-            cost_str.parse::<f64>().ok()
+            Some(loop {
+                let s: String = Input::new()
+                    .with_prompt("Estimated cost per stage run (USD, e.g. 0.05)")
+                    .interact_text()?;
+                match s.parse::<f64>() {
+                    Ok(v) if v > 0.0 => break v,
+                    _ => println!("Enter a positive number (e.g. 0.05)."),
+                }
+            })
         } else {
             None
         };
