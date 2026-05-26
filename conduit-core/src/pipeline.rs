@@ -32,6 +32,16 @@ impl Stage {
         }
     }
 
+    pub fn json_filename(&self) -> &str {
+        match self {
+            Stage::Orchestrator => "orchestrator.json",
+            Stage::Doc => "requirements.json",
+            Stage::Architecture => "architecture.json",
+            Stage::Code => "code.json",
+            Stage::Test => "tests.json",
+        }
+    }
+
     pub fn display_name(&self) -> &str {
         match self {
             Stage::Orchestrator => "Orchestrator",
@@ -110,7 +120,15 @@ impl<'a> PipelineRunner<'a> {
             .map(|v| format!("\nOptions: {}", v))
             .unwrap_or_default();
 
-        match stage {
+        let json_instructions = match stage {
+            Stage::Orchestrator => "\n\nAt the end of your response, emit a fenced ```json``` block with this schema:\n{\"plan_steps\": [\"...\"], \"agents_invoked\": [\"doc\",\"architecture\",\"code\",\"test\"]}",
+            Stage::Doc => "\n\nAt the end, emit a fenced ```json``` block: {\"requirements\": [\"...\"], \"acceptance_criteria\": [\"...\"]}",
+            Stage::Architecture => "\n\nAt the end, emit a fenced ```json``` block: {\"components\": [\"...\"], \"file_layout\": [\"...\"], \"decisions\": [\"...\"]}",
+            Stage::Code => "\n\nAt the end, emit a fenced ```json``` block: {\"files_changed\": [\"path/to/file\"], \"summary\": \"...\"}",
+            Stage::Test => "\n\nAt the end, emit a fenced ```json``` block: {\"tests_added\": [\"...\"], \"all_passing\": true}",
+        };
+
+        let base = match stage {
             Stage::Orchestrator => format!(
                 "{ref_section}Task: {id}\nDescription: {desc}{options}\n\nYou are an AI orchestration agent. Break this task into a structured work plan.\nProduce specific instructions for each of the following agents:\n- Documentation agent: what requirements to capture\n- Architecture agent: what design decisions to make\n- Code agent: what to implement and where\n- Test agent: what to test and how\n\nOutput a clear, numbered plan each agent can follow independently.",
                 ref_section = ref_section,
@@ -140,7 +158,9 @@ impl<'a> PipelineRunner<'a> {
                 requirements = self.read_stage_output(&Stage::Doc),
                 code = self.read_stage_output(&Stage::Code),
             ),
-        }
+        };
+
+        format!("{}{}", base, json_instructions)
     }
 
     fn capture_git_changes(&self) -> Option<String> {
@@ -174,14 +194,37 @@ impl<'a> PipelineRunner<'a> {
         ))
     }
 
+    pub fn extract_json_sidecar(raw: &str) -> Option<serde_json::Value> {
+        let start_marker = "```json";
+        let start = raw.find(start_marker)?;
+        let after_marker = &raw[start + start_marker.len()..];
+        let end_rel = after_marker.find("```")?;
+        let json_text = after_marker[..end_rel].trim();
+        serde_json::from_str(json_text).ok()
+    }
+
+    fn write_json_sidecar(&self, stage: &Stage, raw_output: &str) -> Result<(), ConduitError> {
+        let task_dir = self.task_dir();
+        std::fs::create_dir_all(&task_dir)?;
+        let payload = Self::extract_json_sidecar(raw_output).unwrap_or_else(|| {
+            serde_json::json!({ "raw": raw_output })
+        });
+        let pretty = serde_json::to_string_pretty(&payload)
+            .map_err(|e| ConduitError::JsonParseError {
+                stage: stage.name().to_string(),
+                reason: e.to_string(),
+            })?;
+        std::fs::write(task_dir.join(stage.json_filename()), pretty)?;
+        Ok(())
+    }
+
     fn run_stage(&self, stage: &Stage, reference_docs: &str) -> Result<(), ConduitError> {
         let prompt = self.build_prompt(stage, reference_docs);
         let provider: Box<dyn Provider> = self.resolver.resolve(stage)?;
         let output = provider.invoke(stage.name(), &prompt, self.project_dir)?;
         self.write_stage_output(stage, &output)?;
+        self.write_json_sidecar(stage, &output)?;
 
-        // After the Code stage, append a snapshot of actual filesystem changes
-        // so the Test stage sees real diffs, not just the agent's self-reported summary.
         if matches!(stage, Stage::Code) {
             if let Some(diff_section) = self.capture_git_changes() {
                 let path = self.task_dir().join(stage.output_filename());
@@ -405,5 +448,45 @@ mod tests {
         let task_dir = dir.path().join(".conduit").join("tasks").join("t");
         let code_md = std::fs::read_to_string(task_dir.join("code.md")).unwrap();
         assert!(code_md.contains("new_file.rs"), "code.md should contain git status output mentioning new_file.rs, got:\n{}", code_md);
+    }
+
+    #[test]
+    fn test_extract_json_sidecar_from_fenced_block() {
+        let raw = r#"Here is the analysis.
+
+```json
+{"decisions": ["use Rust"], "risks": ["scope creep"]}
+```
+
+And some trailing notes."#;
+        let json = PipelineRunner::extract_json_sidecar(raw).unwrap();
+        assert_eq!(json.get("decisions").unwrap()[0], "use Rust");
+        assert_eq!(json.get("risks").unwrap()[0], "scope creep");
+    }
+
+    #[test]
+    fn test_extract_json_sidecar_returns_none_when_no_block() {
+        let raw = "no json here at all";
+        assert!(PipelineRunner::extract_json_sidecar(raw).is_none());
+    }
+
+    #[test]
+    fn test_extract_json_sidecar_malformed_block_returns_none() {
+        let raw = "```json\n{not valid json\n```";
+        assert!(PipelineRunner::extract_json_sidecar(raw).is_none());
+    }
+
+    #[test]
+    fn test_run_writes_json_sidecar_when_agent_emits_one() {
+        let task = make_task("json-task", "desc");
+        let dir = tempdir().unwrap();
+        let response = "summary text\n\n```json\n{\"decisions\":[\"x\"]}\n```\n";
+        let resolver = MockProviderResolver { response: response.to_string() };
+        let runner = PipelineRunner::new(&task, &resolver, dir.path());
+        runner.run(|_, _, _| {}).unwrap();
+        let task_dir = dir.path().join(".conduit").join("tasks").join("json-task");
+        for stage_json in &["orchestrator.json", "requirements.json", "architecture.json", "code.json", "tests.json"] {
+            assert!(task_dir.join(stage_json).exists(), "missing {}", stage_json);
+        }
     }
 }

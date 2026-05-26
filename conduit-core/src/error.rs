@@ -36,6 +36,8 @@ pub enum ConduitError {
     WorktreeError { task_id: String, reason: String },
     #[error("Project is not a git repository — required for parallel mode. Use `--no-worktree` or run `git init`.")]
     NotAGitRepo,
+    #[error("Failed to parse JSON sidecar from stage `{stage}`: {reason}")]
+    JsonParseError { stage: String, reason: String },
 }
 
 #[cfg(test)]
@@ -109,5 +111,15 @@ mod tests {
     fn test_not_a_git_repo_message() {
         let e = ConduitError::NotAGitRepo;
         assert!(e.to_string().contains("git repository"));
+    }
+
+    #[test]
+    fn test_json_parse_error_message() {
+        let e = ConduitError::JsonParseError {
+            stage: "doc".to_string(),
+            reason: "expected `,` at line 3".to_string(),
+        };
+        assert!(e.to_string().contains("doc"));
+        assert!(e.to_string().contains("JSON"));
     }
 }
