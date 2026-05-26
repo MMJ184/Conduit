@@ -27,6 +27,10 @@ enum Commands {
         concurrency: Option<usize>,
         #[arg(long, help = "Override starting account for all stages")]
         account: Option<String>,
+        #[arg(long, help = "Re-run all stages even if .conduit/tasks/<id>/*.md exists")]
+        force: bool,
+        #[arg(long, help = "Disable per-task git worktree isolation (shared project dir)")]
+        no_worktree: bool,
     },
     /// Validate tasks.toml without running
     Validate,
@@ -70,8 +74,8 @@ fn run() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Init { force } => commands::init::run(&cwd, force),
-        Commands::Run { task, profile, concurrency, account } => {
-            commands::run::run(&cwd, task.as_deref(), profile.as_deref(), concurrency, account.as_deref())
+        Commands::Run { task, profile, concurrency, account, force, no_worktree } => {
+            commands::run::run(&cwd, task.as_deref(), profile.as_deref(), concurrency, account.as_deref(), force, no_worktree)
         }
         Commands::Validate => commands::validate::run(&cwd),
         Commands::Status => commands::status::run(),

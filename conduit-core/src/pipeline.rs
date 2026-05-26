@@ -51,11 +51,17 @@ pub struct PipelineRunner<'a> {
     task: &'a Task,
     resolver: &'a dyn ProviderResolver,
     project_dir: &'a Path,
+    force: bool,
 }
 
 impl<'a> PipelineRunner<'a> {
     pub fn new(task: &'a Task, resolver: &'a dyn ProviderResolver, project_dir: &'a Path) -> Self {
-        Self { task, resolver, project_dir }
+        Self { task, resolver, project_dir, force: false }
+    }
+
+    pub fn with_force(mut self, force: bool) -> Self {
+        self.force = force;
+        self
     }
 
     pub fn task_dir(&self) -> PathBuf {
@@ -197,6 +203,10 @@ impl<'a> PipelineRunner<'a> {
         let stages = Stage::all();
         let total = stages.len();
         for (i, stage) in stages.iter().enumerate() {
+            let out_path = self.task_dir().join(stage.output_filename());
+            if !self.force && out_path.exists() {
+                continue;
+            }
             self.run_stage(stage, &reference_docs)?;
             on_stage_complete(i + 1, total, stage);
         }
@@ -317,6 +327,61 @@ mod tests {
         std::fs::write(dir.join("seed"), "").unwrap();
         Command::new("git").args(["add", "."]).current_dir(dir).output().unwrap();
         Command::new("git").args(["commit", "-m", "i"]).current_dir(dir).output().unwrap();
+    }
+
+    #[test]
+    fn test_pipeline_skips_stage_when_output_exists() {
+        let task = make_task("resume-test", "test resume");
+        let dir = tempdir().unwrap();
+        let task_dir = dir.path().join(".conduit").join("tasks").join("resume-test");
+        std::fs::create_dir_all(&task_dir).unwrap();
+        std::fs::write(task_dir.join("orchestrator.md"), "PRE-EXISTING orchestrator").unwrap();
+        std::fs::write(task_dir.join("requirements.md"), "PRE-EXISTING requirements").unwrap();
+
+        let resolver = MockProviderResolver { response: "FRESH".to_string() };
+        let runner = PipelineRunner::new(&task, &resolver, dir.path());
+
+        let mut completed_stages: Vec<String> = Vec::new();
+        runner.run(|_, _, stage| {
+            completed_stages.push(stage.name().to_string());
+        }).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(task_dir.join("orchestrator.md")).unwrap(),
+            "PRE-EXISTING orchestrator",
+            "orchestrator.md should NOT be overwritten when it already exists"
+        );
+        assert_eq!(
+            std::fs::read_to_string(task_dir.join("requirements.md")).unwrap(),
+            "PRE-EXISTING requirements",
+        );
+        assert!(task_dir.join("architecture.md").exists());
+        assert!(task_dir.join("code.md").exists());
+        assert!(task_dir.join("tests.md").exists());
+
+        assert_eq!(completed_stages.len(), 3, "expected 3 stage callbacks, got {:?}", completed_stages);
+    }
+
+    #[test]
+    fn test_pipeline_force_reruns_all_stages() {
+        let task = make_task("force-test", "test force");
+        let dir = tempdir().unwrap();
+        let task_dir = dir.path().join(".conduit").join("tasks").join("force-test");
+        std::fs::create_dir_all(&task_dir).unwrap();
+        std::fs::write(task_dir.join("orchestrator.md"), "OLD orchestrator").unwrap();
+
+        let resolver = MockProviderResolver { response: "FRESH".to_string() };
+        let runner = PipelineRunner::new(&task, &resolver, dir.path()).with_force(true);
+
+        let mut count = 0usize;
+        runner.run(|_, _, _| { count += 1; }).unwrap();
+
+        assert_eq!(count, 5, "force should run all 5 stages");
+        assert_eq!(
+            std::fs::read_to_string(task_dir.join("orchestrator.md")).unwrap(),
+            "FRESH",
+            "with force=true, orchestrator.md should be overwritten"
+        );
     }
 
     #[test]

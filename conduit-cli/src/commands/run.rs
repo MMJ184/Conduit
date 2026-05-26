@@ -19,6 +19,8 @@ pub fn run(
     profile_name: Option<&str>,
     concurrency: Option<usize>,
     account: Option<&str>,
+    force: bool,
+    no_worktree: bool,
 ) -> Result<()> {
     if let Some(0) = concurrency {
         anyhow::bail!("--concurrency must be at least 1");
@@ -72,7 +74,9 @@ pub fn run(
 
     if use_parallel {
         let print_lock = Arc::new(Mutex::new(()));
-        let runner = ParallelRunner::new(&tasks, &resolver, dir, concurrency);
+        let runner = ParallelRunner::new(&tasks, &resolver, dir, concurrency)
+            .with_worktree(!no_worktree)
+            .with_force(force);
         let results = runner.run(|event| {
             let _guard = print_lock.lock().unwrap();
             match event {
@@ -98,7 +102,7 @@ pub fn run(
     } else {
         for task in &tasks {
             println!("{} {}", "[running]".cyan().bold(), task.id.bold());
-            let runner = PipelineRunner::new(task, &resolver, dir);
+            let runner = PipelineRunner::new(task, &resolver, dir).with_force(force);
             let result = runner.run(|completed, total, stage| {
                 println!(
                     "  [{}/{}] {}  {}",

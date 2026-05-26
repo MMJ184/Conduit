@@ -24,6 +24,7 @@ pub struct ParallelRunner<'a> {
     project_dir: &'a Path,
     concurrency: usize,
     use_worktree: bool,
+    force: bool,
 }
 
 impl<'a> ParallelRunner<'a> {
@@ -33,11 +34,16 @@ impl<'a> ParallelRunner<'a> {
         project_dir: &'a Path,
         concurrency: usize,
     ) -> Self {
-        Self { tasks, resolver, project_dir, concurrency, use_worktree: true }
+        Self { tasks, resolver, project_dir, concurrency, use_worktree: true, force: false }
     }
 
     pub fn with_worktree(mut self, enabled: bool) -> Self {
         self.use_worktree = enabled;
+        self
+    }
+
+    pub fn with_force(mut self, force: bool) -> Self {
+        self.force = force;
         self
     }
 
@@ -74,7 +80,7 @@ impl<'a> ParallelRunner<'a> {
                     None => self.project_dir,
                 };
 
-                let runner = PipelineRunner::new(task, self.resolver, work_dir);
+                let runner = PipelineRunner::new(task, self.resolver, work_dir).with_force(self.force);
                 let result = runner.run(|completed, total, stage| {
                     on_event(TaskEvent::StageComplete {
                         task_id: task.id.clone(),

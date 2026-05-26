@@ -1,4 +1,5 @@
 use assert_cmd::Command;
+use predicates::prelude::PredicateBooleanExt;
 
 use std::fs;
 use std::path::Path;
@@ -476,4 +477,23 @@ cost_per_run = 0.05
         .stdout(predicates::str::contains("claude-work"))
         .stdout(predicates::str::contains("auto-switch: both"))
         .stdout(predicates::str::contains("$10.00/day"));
+}
+
+#[test]
+fn test_run_force_flag_recognized() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("tasks.toml"), r#"
+[[task]]
+id = "t1"
+description = "a"
+"#).unwrap();
+    let (_cfg_dir, cfg_path) = write_global_config("");
+    conduit()
+        .arg("run")
+        .arg("--force")
+        .current_dir(dir.path())
+        .env("CONDUIT_GLOBAL_CONFIG", &cfg_path)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("--force").not());
 }
