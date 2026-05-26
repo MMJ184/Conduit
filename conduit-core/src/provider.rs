@@ -35,12 +35,16 @@ impl ClaudeProvider {
 }
 
 impl CodexProvider {
-    pub fn command_args(&self, prompt: &str) -> Vec<String> {
+    /// Codex pipes the prompt via stdin (using `-` as the placeholder) instead of
+    /// passing it as an argument. This avoids cmd.exe's argument-mangling on Windows
+    /// when the prompt is long or contains newlines/special characters — which happens
+    /// because `codex` on Windows is an npm `.cmd` shim that routes args through cmd.exe.
+    pub fn command_args(&self, _prompt: &str) -> Vec<String> {
         vec![
             "exec".to_string(),
-            "--ask-for-approval".to_string(),
-            "never".to_string(),
-            prompt.to_string(),
+            "--full-auto".to_string(),
+            "--skip-git-repo-check".to_string(),
+            "-".to_string(),
         ]
     }
 }
@@ -54,40 +58,71 @@ impl GeminiProvider {
 impl Provider for ClaudeProvider {
     fn name(&self) -> &str { "claude" }
     fn invoke(&self, stage: &str, prompt: &str, work_dir: &Path) -> Result<String, ConduitError> {
-        invoke_cli(&self.binary, &self.command_args(prompt), stage, work_dir, self.name())
+        invoke_cli(&self.binary, &self.command_args(prompt), None, stage, work_dir, self.name())
     }
 }
 
 impl Provider for CodexProvider {
     fn name(&self) -> &str { "codex" }
     fn invoke(&self, stage: &str, prompt: &str, work_dir: &Path) -> Result<String, ConduitError> {
-        invoke_cli(&self.binary, &self.command_args(prompt), stage, work_dir, self.name())
+        invoke_cli(&self.binary, &self.command_args(prompt), Some(prompt), stage, work_dir, self.name())
     }
 }
 
 impl Provider for GeminiProvider {
     fn name(&self) -> &str { "gemini" }
     fn invoke(&self, stage: &str, prompt: &str, work_dir: &Path) -> Result<String, ConduitError> {
-        invoke_cli(&self.binary, &self.command_args(prompt), stage, work_dir, self.name())
+        invoke_cli(&self.binary, &self.command_args(prompt), None, stage, work_dir, self.name())
     }
 }
 
+/// Invoke a provider CLI binary. When `stdin` is Some, the string is piped to the subprocess's
+/// stdin (and the subprocess is expected to read its prompt from stdin — `-` in args).
+/// When `stdin` is None, the prompt is assumed to be embedded in `args` already.
 fn invoke_cli(
     binary: &Path,
     args: &[String],
+    stdin: Option<&str>,
     stage: &str,
     work_dir: &Path,
     provider_name: &str,
 ) -> Result<String, ConduitError> {
-    let output = Command::new(binary)
-        .args(args)
-        .current_dir(work_dir)
-        .output()
-        .map_err(|e| ConduitError::AgentInvocationFailed {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut cmd = Command::new(binary);
+    cmd.args(args).current_dir(work_dir);
+
+    if stdin.is_some() {
+        cmd.stdin(Stdio::piped());
+    }
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut child = cmd.spawn().map_err(|e| ConduitError::AgentInvocationFailed {
+        provider: provider_name.to_string(),
+        stage: stage.to_string(),
+        reason: e.to_string(),
+    })?;
+
+    if let Some(prompt) = stdin {
+        let mut child_stdin = child.stdin.take().ok_or_else(|| ConduitError::AgentInvocationFailed {
             provider: provider_name.to_string(),
             stage: stage.to_string(),
-            reason: e.to_string(),
+            reason: "failed to open subprocess stdin".to_string(),
         })?;
+        child_stdin.write_all(prompt.as_bytes()).map_err(|e| ConduitError::AgentInvocationFailed {
+            provider: provider_name.to_string(),
+            stage: stage.to_string(),
+            reason: format!("failed writing prompt to stdin: {}", e),
+        })?;
+        // Drop closes stdin → subprocess sees EOF
+    }
+
+    let output = child.wait_with_output().map_err(|e| ConduitError::AgentInvocationFailed {
+        provider: provider_name.to_string(),
+        stage: stage.to_string(),
+        reason: e.to_string(),
+    })?;
     if !output.status.success() {
         return Err(ConduitError::AgentInvocationFailed {
             provider: provider_name.to_string(),
@@ -608,14 +643,14 @@ mod tests {
     }
 
     #[test]
-    fn test_codex_provider_uses_exec_subcommand() {
+    fn test_codex_provider_uses_exec_subcommand_with_stdin_dash() {
+        // Codex pipes the prompt via stdin (using `-` placeholder) — the prompt itself
+        // is NOT in args. This avoids cmd.exe arg-mangling on Windows for npm shims.
         let provider = CodexProvider { binary: PathBuf::from("codex") };
         let args = provider.command_args("write hello world");
-        let exec_idx = args.iter().position(|a| a == "exec").expect("must contain exec");
-        let prompt_idx = args.iter().position(|a| a == "write hello world").expect("must contain prompt");
-        assert_eq!(exec_idx, 0, "exec must be the first arg (subcommand)");
-        assert!(exec_idx < prompt_idx, "exec must come before the prompt");
-        assert_eq!(args.last().unwrap(), "write hello world", "prompt must be last arg");
+        assert_eq!(args.first().unwrap(), "exec", "exec must be the first arg (subcommand)");
+        assert_eq!(args.last().unwrap(), "-", "Codex must use `-` placeholder so prompt is read from stdin");
+        assert!(!args.contains(&"write hello world".to_string()), "prompt must NOT appear in args (it goes via stdin)");
     }
 
     #[test]
@@ -654,22 +689,27 @@ mod tests {
     }
 
     #[test]
-    fn test_codex_provider_includes_approval_flag() {
+    fn test_codex_provider_includes_full_auto_flag() {
+        // Codex's `--full-auto` enables sandboxed workspace-write without approval prompts —
+        // the non-interactive mode required for subprocess invocation. (`--ask-for-approval`
+        // existed in older Codex versions but was removed by 0.122.0.)
         let provider = CodexProvider { binary: PathBuf::from("codex") };
         let args = provider.command_args("do something");
         assert!(
-            args.iter().any(|a| a == "--ask-for-approval"),
-            "Codex must run with --ask-for-approval to avoid hanging on prompts"
+            args.iter().any(|a| a == "--full-auto"),
+            "Codex must run with --full-auto for non-interactive sandboxed execution"
         );
-        let idx = args.iter().position(|a| a == "--ask-for-approval").unwrap();
-        assert_eq!(args[idx + 1], "never");
     }
 
     #[test]
-    fn test_prompt_is_last_arg_for_all_providers() {
+    fn test_prompt_is_last_arg_for_args_mode_providers() {
+        // Claude and Gemini pass the prompt as the last arg. Codex does NOT — it uses stdin.
         let prompt = "the actual prompt content";
         assert_eq!(ClaudeProvider { binary: PathBuf::from("claude") }.command_args(prompt).last().unwrap(), prompt);
-        assert_eq!(CodexProvider { binary: PathBuf::from("codex") }.command_args(prompt).last().unwrap(), prompt);
         assert_eq!(GeminiProvider { binary: PathBuf::from("gemini") }.command_args(prompt).last().unwrap(), prompt);
+        // Codex's last arg is `-` (stdin placeholder), not the prompt
+        let codex_args = CodexProvider { binary: PathBuf::from("codex") }.command_args(prompt);
+        assert_eq!(codex_args.last().unwrap(), "-");
+        assert!(!codex_args.contains(&prompt.to_string()));
     }
 }
