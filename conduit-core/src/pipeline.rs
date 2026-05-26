@@ -137,11 +137,55 @@ impl<'a> PipelineRunner<'a> {
         }
     }
 
+    fn capture_git_changes(&self) -> Option<String> {
+        let status = std::process::Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(self.project_dir)
+            .output()
+            .ok()?;
+        if !status.status.success() {
+            return None;
+        }
+        let status_text = String::from_utf8_lossy(&status.stdout);
+        if status_text.trim().is_empty() {
+            return Some(String::from("(no uncommitted changes detected)"));
+        }
+
+        let diff_stat = std::process::Command::new("git")
+            .args(["diff", "--stat", "HEAD"])
+            .current_dir(self.project_dir)
+            .output()
+            .ok()?;
+        let diff_text = if diff_stat.status.success() {
+            String::from_utf8_lossy(&diff_stat.stdout).to_string()
+        } else {
+            String::new()
+        };
+
+        Some(format!(
+            "## Filesystem changes after Code stage\n\n### `git status --porcelain`\n```\n{}```\n\n### `git diff --stat HEAD`\n```\n{}```\n",
+            status_text, diff_text
+        ))
+    }
+
     fn run_stage(&self, stage: &Stage, reference_docs: &str) -> Result<(), ConduitError> {
         let prompt = self.build_prompt(stage, reference_docs);
         let provider: Box<dyn Provider> = self.resolver.resolve(stage)?;
         let output = provider.invoke(stage.name(), &prompt, self.project_dir)?;
         self.write_stage_output(stage, &output)?;
+
+        // After the Code stage, append a snapshot of actual filesystem changes
+        // so the Test stage sees real diffs, not just the agent's self-reported summary.
+        if matches!(stage, Stage::Code) {
+            if let Some(diff_section) = self.capture_git_changes() {
+                let path = self.task_dir().join(stage.output_filename());
+                let mut combined = std::fs::read_to_string(&path).unwrap_or_default();
+                combined.push_str("\n\n");
+                combined.push_str(&diff_section);
+                std::fs::write(&path, combined)?;
+            }
+        }
+
         Ok(())
     }
 
@@ -166,6 +210,8 @@ mod tests {
     use crate::provider::MockProviderResolver;
     use crate::tasks::Task;
     use std::fs;
+    use std::path::Path;
+    use std::process::Command;
     use tempfile::tempdir;
 
     fn make_task(id: &str, desc: &str) -> Task {
@@ -262,5 +308,37 @@ mod tests {
         let err = runner.run(|_, _, _| { count += 1; }).unwrap_err();
         assert_eq!(count, 0);
         assert!(matches!(err, ConduitError::AgentInvocationFailed { .. }));
+    }
+
+    fn init_git_in(dir: &Path) {
+        Command::new("git").args(["init"]).current_dir(dir).output().unwrap();
+        Command::new("git").args(["config", "user.email", "t@t"]).current_dir(dir).output().unwrap();
+        Command::new("git").args(["config", "user.name", "T"]).current_dir(dir).output().unwrap();
+        std::fs::write(dir.join("seed"), "").unwrap();
+        Command::new("git").args(["add", "."]).current_dir(dir).output().unwrap();
+        Command::new("git").args(["commit", "-m", "i"]).current_dir(dir).output().unwrap();
+    }
+
+    #[test]
+    fn test_code_stage_handoff_includes_git_diff_when_in_repo() {
+        let task = make_task("t", "desc");
+        let dir = tempdir().unwrap();
+        init_git_in(dir.path());
+
+        #[derive(Debug)]
+        struct CreatesFileResolver;
+        impl ProviderResolver for CreatesFileResolver {
+            fn resolve(&self, _stage: &Stage) -> Result<Box<dyn Provider>, ConduitError> {
+                Ok(Box::new(crate::provider::MockProvider { response: "agent output".to_string() }))
+            }
+        }
+
+        let runner = PipelineRunner::new(&task, &CreatesFileResolver, dir.path());
+        std::fs::write(dir.path().join("new_file.rs"), "fn foo() {}").unwrap();
+        runner.run(|_, _, _| {}).unwrap();
+
+        let task_dir = dir.path().join(".conduit").join("tasks").join("t");
+        let code_md = std::fs::read_to_string(task_dir.join("code.md")).unwrap();
+        assert!(code_md.contains("new_file.rs"), "code.md should contain git status output mentioning new_file.rs, got:\n{}", code_md);
     }
 }
