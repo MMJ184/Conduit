@@ -1,7 +1,38 @@
 use assert_cmd::Command;
 
 use std::fs;
+use std::path::Path;
 use tempfile::tempdir;
+
+/// Initialize a minimal git repo so that git worktree commands will work.
+fn init_git_repo(dir: &Path) {
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(dir)
+        .output()
+        .expect("git init failed");
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@conduit.local"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    fs::write(dir.join("README.md"), "init").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+}
 
 fn conduit() -> Command {
     Command::cargo_bin("conduit").unwrap()
@@ -312,6 +343,8 @@ provider = "fake-account"
 #[test]
 fn test_run_concurrency_2_two_tasks_both_fail() {
     let dir = tempdir().unwrap();
+    // Parallel mode requires a git repo (worktree isolation); init one here.
+    init_git_repo(dir.path());
     fs::write(dir.path().join("tasks.toml"), r#"
 [[task]]
 id = "task-a"

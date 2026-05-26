@@ -32,6 +32,10 @@ pub enum ConduitError {
     ConfigSerializeError(String),
     #[error("All accounts exhausted for stage `{stage}`: every configured account is over its limit or failed")]
     AllAccountsExhausted { stage: String },
+    #[error("Git worktree operation failed for task `{task_id}`: {reason}")]
+    WorktreeError { task_id: String, reason: String },
+    #[error("Project is not a git repository — required for parallel mode. Use `--no-worktree` or run `git init`.")]
+    NotAGitRepo,
 }
 
 #[cfg(test)]
@@ -92,5 +96,18 @@ mod tests {
         let msg = e.to_string();
         assert!(msg.contains("doc"));
         assert!(msg.contains("exhausted") || msg.contains("All accounts"));
+    }
+
+    #[test]
+    fn test_worktree_error_message() {
+        let e = ConduitError::WorktreeError { task_id: "t".to_string(), reason: "no git".to_string() };
+        assert!(e.to_string().contains("worktree"));
+        assert!(e.to_string().contains("no git"));
+    }
+
+    #[test]
+    fn test_not_a_git_repo_message() {
+        let e = ConduitError::NotAGitRepo;
+        assert!(e.to_string().contains("git repository"));
     }
 }
