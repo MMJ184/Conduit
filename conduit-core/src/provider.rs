@@ -23,30 +23,48 @@ pub struct CodexProvider;
 #[derive(Debug)]
 pub struct GeminiProvider;
 
+impl ClaudeProvider {
+    pub fn command_args(&self, prompt: &str) -> Vec<String> {
+        vec!["-p".to_string(), prompt.to_string()]
+    }
+}
+
+impl CodexProvider {
+    pub fn command_args(&self, prompt: &str) -> Vec<String> {
+        vec!["exec".to_string(), prompt.to_string()]
+    }
+}
+
+impl GeminiProvider {
+    pub fn command_args(&self, prompt: &str) -> Vec<String> {
+        vec!["-p".to_string(), prompt.to_string()]
+    }
+}
+
 impl Provider for ClaudeProvider {
     fn name(&self) -> &str { "claude" }
     fn invoke(&self, stage: &str, prompt: &str, work_dir: &Path) -> Result<String, ConduitError> {
-        invoke_cli("claude", &["-p", prompt], stage, work_dir, self.name())
+        invoke_cli("claude", &self.command_args(prompt), stage, work_dir, self.name())
     }
 }
 
 impl Provider for CodexProvider {
     fn name(&self) -> &str { "codex" }
     fn invoke(&self, stage: &str, prompt: &str, work_dir: &Path) -> Result<String, ConduitError> {
-        invoke_cli("codex", &[prompt], stage, work_dir, self.name())
+        invoke_cli("codex", &self.command_args(prompt), stage, work_dir, self.name())
     }
 }
 
 impl Provider for GeminiProvider {
     fn name(&self) -> &str { "gemini" }
     fn invoke(&self, stage: &str, prompt: &str, work_dir: &Path) -> Result<String, ConduitError> {
-        invoke_cli("gemini", &["-p", prompt], stage, work_dir, self.name())
+        invoke_cli("gemini", &self.command_args(prompt), stage, work_dir, self.name())
     }
 }
 
 fn invoke_cli(
     binary: &str,
-    args: &[&str],
+    args: &[String],
     stage: &str,
     work_dir: &Path,
     provider_name: &str,
@@ -561,5 +579,29 @@ mod tests {
         let tail: Vec<&str> = order[2..].iter().map(|a| a.name.as_str()).collect();
         assert!(tail.contains(&"openai-a"));
         assert!(tail.contains(&"gemini-a"));
+    }
+
+    #[test]
+    fn test_codex_provider_uses_exec_subcommand() {
+        let provider = CodexProvider;
+        let args = provider.command_args("write hello world");
+        assert_eq!(args, vec!["exec".to_string(), "write hello world".to_string()],
+            "Codex CLI requires `exec <prompt>` for non-interactive invocation");
+    }
+
+    #[test]
+    fn test_claude_provider_uses_p_flag() {
+        let provider = ClaudeProvider;
+        let args = provider.command_args("draft a doc");
+        assert_eq!(args[0], "-p");
+        assert_eq!(args[1], "draft a doc");
+    }
+
+    #[test]
+    fn test_gemini_provider_uses_p_flag() {
+        let provider = GeminiProvider;
+        let args = provider.command_args("plan steps");
+        assert_eq!(args[0], "-p");
+        assert_eq!(args[1], "plan steps");
     }
 }
