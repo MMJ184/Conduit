@@ -595,16 +595,20 @@ mod tests {
     fn test_codex_provider_uses_exec_subcommand() {
         let provider = CodexProvider;
         let args = provider.command_args("write hello world");
-        assert_eq!(args[0], "exec",
-            "Codex CLI requires `exec` subcommand for non-interactive invocation");
-        assert!(args.contains(&"write hello world".to_string()), "prompt must be in args");
+        let exec_idx = args.iter().position(|a| a == "exec").expect("must contain exec");
+        let prompt_idx = args.iter().position(|a| a == "write hello world").expect("must contain prompt");
+        assert_eq!(exec_idx, 0, "exec must be the first arg (subcommand)");
+        assert!(exec_idx < prompt_idx, "exec must come before the prompt");
+        assert_eq!(args.last().unwrap(), "write hello world", "prompt must be last arg");
     }
 
     #[test]
     fn test_claude_provider_uses_p_flag() {
         let provider = ClaudeProvider;
         let args = provider.command_args("draft a doc");
-        assert!(args.contains(&"-p".to_string()), "Claude must have -p flag");
+        let p_idx = args.iter().position(|a| a == "-p").expect("must contain -p");
+        let prompt_idx = args.iter().position(|a| a == "draft a doc").expect("must contain prompt");
+        assert!(p_idx < prompt_idx, "-p must come before the prompt; got args = {:?}", args);
         assert_eq!(args.last().unwrap(), "draft a doc", "prompt must be last arg");
     }
 
