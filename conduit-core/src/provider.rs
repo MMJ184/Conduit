@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -17,11 +17,11 @@ pub trait ProviderResolver: std::fmt::Debug + Send + Sync {
 }
 
 #[derive(Debug)]
-pub struct ClaudeProvider;
+pub struct ClaudeProvider { pub binary: PathBuf }
 #[derive(Debug)]
-pub struct CodexProvider;
+pub struct CodexProvider { pub binary: PathBuf }
 #[derive(Debug)]
-pub struct GeminiProvider;
+pub struct GeminiProvider { pub binary: PathBuf }
 
 impl ClaudeProvider {
     pub fn command_args(&self, prompt: &str) -> Vec<String> {
@@ -54,26 +54,26 @@ impl GeminiProvider {
 impl Provider for ClaudeProvider {
     fn name(&self) -> &str { "claude" }
     fn invoke(&self, stage: &str, prompt: &str, work_dir: &Path) -> Result<String, ConduitError> {
-        invoke_cli("claude", &self.command_args(prompt), stage, work_dir, self.name())
+        invoke_cli(&self.binary, &self.command_args(prompt), stage, work_dir, self.name())
     }
 }
 
 impl Provider for CodexProvider {
     fn name(&self) -> &str { "codex" }
     fn invoke(&self, stage: &str, prompt: &str, work_dir: &Path) -> Result<String, ConduitError> {
-        invoke_cli("codex", &self.command_args(prompt), stage, work_dir, self.name())
+        invoke_cli(&self.binary, &self.command_args(prompt), stage, work_dir, self.name())
     }
 }
 
 impl Provider for GeminiProvider {
     fn name(&self) -> &str { "gemini" }
     fn invoke(&self, stage: &str, prompt: &str, work_dir: &Path) -> Result<String, ConduitError> {
-        invoke_cli("gemini", &self.command_args(prompt), stage, work_dir, self.name())
+        invoke_cli(&self.binary, &self.command_args(prompt), stage, work_dir, self.name())
     }
 }
 
 fn invoke_cli(
-    binary: &str,
+    binary: &Path,
     args: &[String],
     stage: &str,
     work_dir: &Path,
@@ -116,12 +116,7 @@ pub fn select_provider_for_stage(
             profile: profile.name.clone(),
         })?;
 
-    match account.provider.as_str() {
-        "claude" if which::which("claude").is_ok() => Ok(Box::new(ClaudeProvider)),
-        "openai" if which::which("codex").is_ok() => Ok(Box::new(CodexProvider)),
-        "gemini" if which::which("gemini").is_ok() => Ok(Box::new(GeminiProvider)),
-        _ => Err(ConduitError::NoProviderAvailable),
-    }
+    build_provider(account)
 }
 
 #[derive(Debug)]
@@ -167,9 +162,18 @@ pub fn build_candidate_order<'a>(primary_name: &str, config: &'a Config) -> Vec<
 
 fn build_provider(account: &AIAccount) -> Result<Box<dyn Provider>, ConduitError> {
     match account.provider.as_str() {
-        "claude" if which::which("claude").is_ok() => Ok(Box::new(ClaudeProvider)),
-        "openai" if which::which("codex").is_ok() => Ok(Box::new(CodexProvider)),
-        "gemini" if which::which("gemini").is_ok() => Ok(Box::new(GeminiProvider)),
+        "claude" => {
+            let binary = which::which("claude").map_err(|_| ConduitError::NoProviderAvailable)?;
+            Ok(Box::new(ClaudeProvider { binary }))
+        }
+        "openai" => {
+            let binary = which::which("codex").map_err(|_| ConduitError::NoProviderAvailable)?;
+            Ok(Box::new(CodexProvider { binary }))
+        }
+        "gemini" => {
+            let binary = which::which("gemini").map_err(|_| ConduitError::NoProviderAvailable)?;
+            Ok(Box::new(GeminiProvider { binary }))
+        }
         _ => Err(ConduitError::NoProviderAvailable),
     }
 }
@@ -328,7 +332,19 @@ impl ProviderResolver for MockProviderResolver {
 mod tests {
     use super::*;
     use crate::config::{AIAccount, Config, Profile};
+    use std::path::PathBuf;
     use tempfile::tempdir;
+
+    #[test]
+    fn test_provider_structs_carry_resolved_binary_path() {
+        let claude = ClaudeProvider { binary: PathBuf::from("C:\\fake\\claude.cmd") };
+        let codex = CodexProvider { binary: PathBuf::from("/fake/codex") };
+        let gemini = GeminiProvider { binary: PathBuf::from("/fake/gemini") };
+
+        assert_eq!(claude.binary.file_name().unwrap().to_string_lossy(), "claude.cmd");
+        assert_eq!(codex.binary.file_name().unwrap().to_string_lossy(), "codex");
+        assert_eq!(gemini.binary.file_name().unwrap().to_string_lossy(), "gemini");
+    }
 
 
     fn make_config(account_name: &str, provider: &str) -> Config {
@@ -593,7 +609,7 @@ mod tests {
 
     #[test]
     fn test_codex_provider_uses_exec_subcommand() {
-        let provider = CodexProvider;
+        let provider = CodexProvider { binary: PathBuf::from("codex") };
         let args = provider.command_args("write hello world");
         let exec_idx = args.iter().position(|a| a == "exec").expect("must contain exec");
         let prompt_idx = args.iter().position(|a| a == "write hello world").expect("must contain prompt");
@@ -604,7 +620,7 @@ mod tests {
 
     #[test]
     fn test_claude_provider_uses_p_flag() {
-        let provider = ClaudeProvider;
+        let provider = ClaudeProvider { binary: PathBuf::from("claude") };
         let args = provider.command_args("draft a doc");
         let p_idx = args.iter().position(|a| a == "-p").expect("must contain -p");
         let prompt_idx = args.iter().position(|a| a == "draft a doc").expect("must contain prompt");
@@ -614,7 +630,7 @@ mod tests {
 
     #[test]
     fn test_gemini_provider_uses_p_flag() {
-        let provider = GeminiProvider;
+        let provider = GeminiProvider { binary: PathBuf::from("gemini") };
         let args = provider.command_args("plan steps");
         assert_eq!(args[0], "-p");
         assert_eq!(args[1], "plan steps");
@@ -622,7 +638,7 @@ mod tests {
 
     #[test]
     fn test_claude_provider_includes_permission_mode_flag() {
-        let provider = ClaudeProvider;
+        let provider = ClaudeProvider { binary: PathBuf::from("claude") };
         let args = provider.command_args("do something");
         assert!(
             args.iter().any(|a| a == "--permission-mode"),
@@ -639,7 +655,7 @@ mod tests {
 
     #[test]
     fn test_codex_provider_includes_approval_flag() {
-        let provider = CodexProvider;
+        let provider = CodexProvider { binary: PathBuf::from("codex") };
         let args = provider.command_args("do something");
         assert!(
             args.iter().any(|a| a == "--ask-for-approval"),
@@ -652,8 +668,8 @@ mod tests {
     #[test]
     fn test_prompt_is_last_arg_for_all_providers() {
         let prompt = "the actual prompt content";
-        assert_eq!(ClaudeProvider.command_args(prompt).last().unwrap(), prompt);
-        assert_eq!(CodexProvider.command_args(prompt).last().unwrap(), prompt);
-        assert_eq!(GeminiProvider.command_args(prompt).last().unwrap(), prompt);
+        assert_eq!(ClaudeProvider { binary: PathBuf::from("claude") }.command_args(prompt).last().unwrap(), prompt);
+        assert_eq!(CodexProvider { binary: PathBuf::from("codex") }.command_args(prompt).last().unwrap(), prompt);
+        assert_eq!(GeminiProvider { binary: PathBuf::from("gemini") }.command_args(prompt).last().unwrap(), prompt);
     }
 }
