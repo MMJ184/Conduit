@@ -25,13 +25,23 @@ pub struct GeminiProvider;
 
 impl ClaudeProvider {
     pub fn command_args(&self, prompt: &str) -> Vec<String> {
-        vec!["-p".to_string(), prompt.to_string()]
+        vec![
+            "--permission-mode".to_string(),
+            "acceptEdits".to_string(),
+            "-p".to_string(),
+            prompt.to_string(),
+        ]
     }
 }
 
 impl CodexProvider {
     pub fn command_args(&self, prompt: &str) -> Vec<String> {
-        vec!["exec".to_string(), prompt.to_string()]
+        vec![
+            "exec".to_string(),
+            "--ask-for-approval".to_string(),
+            "never".to_string(),
+            prompt.to_string(),
+        ]
     }
 }
 
@@ -585,16 +595,17 @@ mod tests {
     fn test_codex_provider_uses_exec_subcommand() {
         let provider = CodexProvider;
         let args = provider.command_args("write hello world");
-        assert_eq!(args, vec!["exec".to_string(), "write hello world".to_string()],
-            "Codex CLI requires `exec <prompt>` for non-interactive invocation");
+        assert_eq!(args[0], "exec",
+            "Codex CLI requires `exec` subcommand for non-interactive invocation");
+        assert!(args.contains(&"write hello world".to_string()), "prompt must be in args");
     }
 
     #[test]
     fn test_claude_provider_uses_p_flag() {
         let provider = ClaudeProvider;
         let args = provider.command_args("draft a doc");
-        assert_eq!(args[0], "-p");
-        assert_eq!(args[1], "draft a doc");
+        assert!(args.contains(&"-p".to_string()), "Claude must have -p flag");
+        assert_eq!(args.last().unwrap(), "draft a doc", "prompt must be last arg");
     }
 
     #[test]
@@ -603,5 +614,42 @@ mod tests {
         let args = provider.command_args("plan steps");
         assert_eq!(args[0], "-p");
         assert_eq!(args[1], "plan steps");
+    }
+
+    #[test]
+    fn test_claude_provider_includes_permission_mode_flag() {
+        let provider = ClaudeProvider;
+        let args = provider.command_args("do something");
+        assert!(
+            args.iter().any(|a| a == "--permission-mode"),
+            "Claude must run with --permission-mode for non-interactive subprocess use"
+        );
+        let mode_idx = args.iter().position(|a| a == "--permission-mode").unwrap();
+        let mode_value = &args[mode_idx + 1];
+        assert!(
+            mode_value == "acceptEdits" || mode_value == "bypassPermissions",
+            "permission-mode must be acceptEdits or bypassPermissions for subprocess use, got: {}",
+            mode_value
+        );
+    }
+
+    #[test]
+    fn test_codex_provider_includes_approval_flag() {
+        let provider = CodexProvider;
+        let args = provider.command_args("do something");
+        assert!(
+            args.iter().any(|a| a == "--ask-for-approval"),
+            "Codex must run with --ask-for-approval to avoid hanging on prompts"
+        );
+        let idx = args.iter().position(|a| a == "--ask-for-approval").unwrap();
+        assert_eq!(args[idx + 1], "never");
+    }
+
+    #[test]
+    fn test_prompt_is_last_arg_for_all_providers() {
+        let prompt = "the actual prompt content";
+        assert_eq!(ClaudeProvider.command_args(prompt).last().unwrap(), prompt);
+        assert_eq!(CodexProvider.command_args(prompt).last().unwrap(), prompt);
+        assert_eq!(GeminiProvider.command_args(prompt).last().unwrap(), prompt);
     }
 }
