@@ -40,6 +40,10 @@ pub enum ConduitError {
     JsonParseError { stage: String, reason: String },
     #[error("Critic rejected stage `{stage}` after {attempts} attempts: {feedback}")]
     CriticRejected { stage: String, attempts: usize, feedback: String },
+    #[error("Failed to apply diff from Code stage: {reason}")]
+    DiffApplyFailed { reason: String },
+    #[error("Code stage did not emit a parseable unified diff")]
+    NoDiffEmitted,
 }
 
 #[cfg(test)]
@@ -134,5 +138,17 @@ mod tests {
         };
         assert!(e.to_string().contains("code"));
         assert!(e.to_string().contains("missing tests"));
+    }
+
+    #[test]
+    fn test_diff_apply_failed_message() {
+        let e = ConduitError::DiffApplyFailed { reason: "patch does not apply".to_string() };
+        assert!(e.to_string().contains("diff"));
+    }
+
+    #[test]
+    fn test_no_diff_emitted_message() {
+        let e = ConduitError::NoDiffEmitted;
+        assert!(e.to_string().contains("Code stage"));
     }
 }

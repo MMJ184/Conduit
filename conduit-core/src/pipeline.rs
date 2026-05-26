@@ -150,7 +150,7 @@ impl<'a> PipelineRunner<'a> {
                 requirements = self.read_stage_output(&Stage::Doc),
             ),
             Stage::Code => format!(
-                "{ref_section}Requirements:\n{requirements}\n\nArchitecture:\n{architecture}\n\nYou are a code implementation agent. Implement the code as described in\nthe requirements and architecture plan. Write all files to the project\ndirectory. After writing, output a summary of what was created.",
+                "{ref_section}Requirements:\n{requirements}\n\nArchitecture:\n{architecture}\n\nYou are a code implementation agent. Implement the changes by emitting a single unified diff inside a fenced ```diff``` code block. Do NOT use any file-write tools — diff output is the ONLY way to apply changes. The diff must apply cleanly with `git apply` from the project root.\n\nAfter the diff block, briefly explain what each hunk does.",
                 ref_section = ref_section,
                 requirements = self.read_stage_output(&Stage::Doc),
                 architecture = self.read_stage_output(&Stage::Architecture),
@@ -241,6 +241,25 @@ impl<'a> PipelineRunner<'a> {
             self.write_json_sidecar(stage, &output)?;
 
             if matches!(stage, Stage::Code) {
+                // If project_dir is a git repo, require + apply a diff.
+                // If not a git repo, fall back to the prior "agent self-reported"
+                // behaviour so non-git workflows still work.
+                let is_git = std::process::Command::new("git")
+                    .args(["rev-parse", "--git-dir"])
+                    .current_dir(self.project_dir)
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+
+                if is_git {
+                    if let Some(diff_text) = crate::diff::extract_diff_block(&output) {
+                        crate::diff::check_diff(&diff_text, self.project_dir)?;
+                        crate::diff::apply_diff(&diff_text, self.project_dir)?;
+                    } else {
+                        return Err(ConduitError::NoDiffEmitted);
+                    }
+                }
+
                 if let Some(diff_section) = self.capture_git_changes() {
                     let path = self.task_dir().join(stage.output_filename());
                     let mut combined = std::fs::read_to_string(&path).unwrap_or_default();
@@ -461,21 +480,61 @@ mod tests {
         let dir = tempdir().unwrap();
         init_git_in(dir.path());
 
+        // The mock response is the SAME for all stages. The orchestrator/doc/architecture/test stages don't need a diff. The Code stage needs one.
+        // We use a response that has both APPROVED and a valid diff that creates a new file.
         #[derive(Debug)]
-        struct CreatesFileResolver;
-        impl ProviderResolver for CreatesFileResolver {
+        struct DiffResolver;
+        impl ProviderResolver for DiffResolver {
             fn resolve(&self, _stage: &Stage) -> Result<Box<dyn Provider>, ConduitError> {
-                Ok(Box::new(crate::provider::MockProvider { response: "APPROVED\nagent output".to_string() }))
+                Ok(Box::new(crate::provider::MockProvider {
+                    response: "APPROVED\nagent output\n\n```diff\ndiff --git a/new_file.rs b/new_file.rs\nnew file mode 100644\n--- /dev/null\n+++ b/new_file.rs\n@@ -0,0 +1 @@\n+fn foo() {}\n```\n".to_string()
+                }))
             }
         }
 
-        let runner = PipelineRunner::new(&task, &CreatesFileResolver, dir.path());
-        std::fs::write(dir.path().join("new_file.rs"), "fn foo() {}").unwrap();
+        let runner = PipelineRunner::new(&task, &DiffResolver, dir.path());
         runner.run(|_, _, _| {}).unwrap();
 
         let task_dir = dir.path().join(".conduit").join("tasks").join("t");
         let code_md = std::fs::read_to_string(task_dir.join("code.md")).unwrap();
         assert!(code_md.contains("new_file.rs"), "code.md should contain git status output mentioning new_file.rs, got:\n{}", code_md);
+    }
+
+    #[test]
+    fn test_code_stage_in_git_repo_applies_diff() {
+        let task = make_task("diff-task", "desc");
+        let dir = tempdir().unwrap();
+        init_git_in(dir.path());
+        std::fs::write(dir.path().join("target.txt"), "before\n").unwrap();
+        std::process::Command::new("git").args(["add", "target.txt"]).current_dir(dir.path()).output().unwrap();
+        std::process::Command::new("git").args(["commit", "-m", "seed"]).current_dir(dir.path()).output().unwrap();
+
+        let diff_response = "APPROVED\n\n```diff\ndiff --git a/target.txt b/target.txt\n--- a/target.txt\n+++ b/target.txt\n@@ -1 +1 @@\n-before\n+after\n```\n";
+        let resolver = MockProviderResolver { response: diff_response.to_string() };
+        let runner = PipelineRunner::new(&task, &resolver, dir.path());
+        runner.run(|_, _, _| {}).unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join("target.txt")).unwrap();
+        assert_eq!(content.trim_end_matches(['\n', '\r']), "after", "Code stage diff should have been applied");
+    }
+
+    #[test]
+    fn test_code_stage_in_git_repo_without_diff_fails() {
+        let task = make_task("nodiff-task", "desc");
+        let dir = tempdir().unwrap();
+        init_git_in(dir.path());
+        let task_dir = dir.path().join(".conduit").join("tasks").join("nodiff-task");
+        std::fs::create_dir_all(&task_dir).unwrap();
+        for s in &["orchestrator.md", "requirements.md", "architecture.md"] {
+            std::fs::write(task_dir.join(s), "APPROVED\nseed").unwrap();
+        }
+
+        let no_diff_response = "APPROVED\nI did things but there is no diff block here";
+        let resolver = MockProviderResolver { response: no_diff_response.to_string() };
+        let runner = PipelineRunner::new(&task, &resolver, dir.path());
+        let err = runner.run(|_, _, _| {}).unwrap_err();
+        assert!(matches!(err, ConduitError::NoDiffEmitted),
+            "Code stage in git repo must require diff, got: {:?}", err);
     }
 
     #[test]
