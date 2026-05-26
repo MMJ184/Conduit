@@ -1,7 +1,10 @@
 use std::path::{Path, PathBuf};
+use crate::critic::Critic;
 use crate::error::ConduitError;
 use crate::provider::{Provider, ProviderResolver};
 use crate::tasks::Task;
+
+const STAGE_RETRY_BUDGET: usize = 2;
 
 pub enum Stage {
     Orchestrator,
@@ -219,22 +222,47 @@ impl<'a> PipelineRunner<'a> {
     }
 
     fn run_stage(&self, stage: &Stage, reference_docs: &str) -> Result<(), ConduitError> {
-        let prompt = self.build_prompt(stage, reference_docs);
         let provider: Box<dyn Provider> = self.resolver.resolve(stage)?;
-        let output = provider.invoke(stage.name(), &prompt, self.project_dir)?;
-        self.write_stage_output(stage, &output)?;
-        self.write_json_sidecar(stage, &output)?;
+        let critic_provider: Box<dyn Provider> = self.resolver.resolve(stage)?;
+        let critic = Critic::new(critic_provider.as_ref(), self.project_dir);
 
-        if matches!(stage, Stage::Code) {
-            if let Some(diff_section) = self.capture_git_changes() {
-                let path = self.task_dir().join(stage.output_filename());
-                let mut combined = std::fs::read_to_string(&path).unwrap_or_default();
-                combined.push_str("\n\n");
-                combined.push_str(&diff_section);
-                std::fs::write(&path, combined)?;
+        let mut feedback_prefix = String::new();
+        for attempt in 0..STAGE_RETRY_BUDGET {
+            let mut prompt = self.build_prompt(stage, reference_docs);
+            if !feedback_prefix.is_empty() {
+                prompt = format!(
+                    "Previous attempt was REJECTED with this feedback:\n{}\n\nRevise your work. Original prompt follows.\n\n{}",
+                    feedback_prefix, prompt
+                );
+            }
+
+            let output = provider.invoke(stage.name(), &prompt, self.project_dir)?;
+            self.write_stage_output(stage, &output)?;
+            self.write_json_sidecar(stage, &output)?;
+
+            if matches!(stage, Stage::Code) {
+                if let Some(diff_section) = self.capture_git_changes() {
+                    let path = self.task_dir().join(stage.output_filename());
+                    let mut combined = std::fs::read_to_string(&path).unwrap_or_default();
+                    combined.push_str("\n\n");
+                    combined.push_str(&diff_section);
+                    std::fs::write(&path, combined)?;
+                }
+            }
+
+            let verdict = critic.review(stage, &output, &self.task.description)?;
+            if verdict.approved {
+                return Ok(());
+            }
+            feedback_prefix = verdict.feedback.clone();
+            if attempt + 1 == STAGE_RETRY_BUDGET {
+                return Err(ConduitError::CriticRejected {
+                    stage: stage.name().to_string(),
+                    attempts: STAGE_RETRY_BUDGET,
+                    feedback: verdict.feedback,
+                });
             }
         }
-
         Ok(())
     }
 
@@ -315,13 +343,13 @@ mod tests {
     fn test_run_writes_all_five_output_files() {
         let task = make_task("my-task", "test task");
         let dir = tempdir().unwrap();
-        let resolver = MockProviderResolver { response: "stage output content".to_string() };
+        let resolver = MockProviderResolver { response: "APPROVED\nstage output content".to_string() };
         let runner = PipelineRunner::new(&task, &resolver, dir.path());
         runner.run(|_, _, _| {}).unwrap();
         let task_dir = dir.path().join(".conduit").join("tasks").join("my-task");
         for filename in &["orchestrator.md", "requirements.md", "architecture.md", "code.md", "tests.md"] {
             assert!(task_dir.join(filename).exists(), "Missing: {}", filename);
-            assert_eq!(fs::read_to_string(task_dir.join(filename)).unwrap(), "stage output content");
+            assert_eq!(fs::read_to_string(task_dir.join(filename)).unwrap(), "APPROVED\nstage output content");
         }
     }
 
@@ -329,7 +357,7 @@ mod tests {
     fn test_run_callback_called_with_correct_indices() {
         let task = make_task("t", "desc");
         let dir = tempdir().unwrap();
-        let resolver = MockProviderResolver { response: "output".to_string() };
+        let resolver = MockProviderResolver { response: "APPROVED\noutput".to_string() };
         let runner = PipelineRunner::new(&task, &resolver, dir.path());
         let mut calls: Vec<(usize, usize, String)> = Vec::new();
         runner.run(|completed, total, stage| {
@@ -381,7 +409,7 @@ mod tests {
         std::fs::write(task_dir.join("orchestrator.md"), "PRE-EXISTING orchestrator").unwrap();
         std::fs::write(task_dir.join("requirements.md"), "PRE-EXISTING requirements").unwrap();
 
-        let resolver = MockProviderResolver { response: "FRESH".to_string() };
+        let resolver = MockProviderResolver { response: "APPROVED\nFRESH".to_string() };
         let runner = PipelineRunner::new(&task, &resolver, dir.path());
 
         let mut completed_stages: Vec<String> = Vec::new();
@@ -413,7 +441,7 @@ mod tests {
         std::fs::create_dir_all(&task_dir).unwrap();
         std::fs::write(task_dir.join("orchestrator.md"), "OLD orchestrator").unwrap();
 
-        let resolver = MockProviderResolver { response: "FRESH".to_string() };
+        let resolver = MockProviderResolver { response: "APPROVED\nFRESH".to_string() };
         let runner = PipelineRunner::new(&task, &resolver, dir.path()).with_force(true);
 
         let mut count = 0usize;
@@ -422,7 +450,7 @@ mod tests {
         assert_eq!(count, 5, "force should run all 5 stages");
         assert_eq!(
             std::fs::read_to_string(task_dir.join("orchestrator.md")).unwrap(),
-            "FRESH",
+            "APPROVED\nFRESH",
             "with force=true, orchestrator.md should be overwritten"
         );
     }
@@ -437,7 +465,7 @@ mod tests {
         struct CreatesFileResolver;
         impl ProviderResolver for CreatesFileResolver {
             fn resolve(&self, _stage: &Stage) -> Result<Box<dyn Provider>, ConduitError> {
-                Ok(Box::new(crate::provider::MockProvider { response: "agent output".to_string() }))
+                Ok(Box::new(crate::provider::MockProvider { response: "APPROVED\nagent output".to_string() }))
             }
         }
 
@@ -477,10 +505,32 @@ And some trailing notes."#;
     }
 
     #[test]
+    fn test_pipeline_surfaces_critic_rejected_when_critic_always_rejects() {
+        #[derive(Debug)]
+        struct AlwaysRejectResolver;
+        impl ProviderResolver for AlwaysRejectResolver {
+            fn resolve(&self, _stage: &Stage) -> Result<Box<dyn Provider>, ConduitError> {
+                Ok(Box::new(crate::provider::MockProvider {
+                    response: "REJECTED\n- bad".to_string(),
+                }))
+            }
+        }
+        let task = make_task("crit-test", "desc");
+        let dir = tempdir().unwrap();
+        let runner = PipelineRunner::new(&task, &AlwaysRejectResolver, dir.path());
+        let err = runner.run(|_, _, _| {}).unwrap_err();
+        assert!(
+            matches!(err, ConduitError::CriticRejected { .. }),
+            "Pipeline must surface CriticRejected when critic keeps rejecting, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
     fn test_run_writes_json_sidecar_when_agent_emits_one() {
         let task = make_task("json-task", "desc");
         let dir = tempdir().unwrap();
-        let response = "summary text\n\n```json\n{\"decisions\":[\"x\"]}\n```\n";
+        let response = "APPROVED\nsummary text\n\n```json\n{\"decisions\":[\"x\"]}\n```\n";
         let resolver = MockProviderResolver { response: response.to_string() };
         let runner = PipelineRunner::new(&task, &resolver, dir.path());
         runner.run(|_, _, _| {}).unwrap();

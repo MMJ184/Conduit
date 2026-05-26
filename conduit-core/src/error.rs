@@ -38,6 +38,8 @@ pub enum ConduitError {
     NotAGitRepo,
     #[error("Failed to parse JSON sidecar from stage `{stage}`: {reason}")]
     JsonParseError { stage: String, reason: String },
+    #[error("Critic rejected stage `{stage}` after {attempts} attempts: {feedback}")]
+    CriticRejected { stage: String, attempts: usize, feedback: String },
 }
 
 #[cfg(test)]
@@ -121,5 +123,16 @@ mod tests {
         };
         assert!(e.to_string().contains("doc"));
         assert!(e.to_string().contains("JSON"));
+    }
+
+    #[test]
+    fn test_critic_rejected_message() {
+        let e = ConduitError::CriticRejected {
+            stage: "code".to_string(),
+            attempts: 2,
+            feedback: "missing tests".to_string(),
+        };
+        assert!(e.to_string().contains("code"));
+        assert!(e.to_string().contains("missing tests"));
     }
 }

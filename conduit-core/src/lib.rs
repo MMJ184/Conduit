@@ -1,4 +1,5 @@
 pub mod config;
+pub mod critic;
 pub mod error;
 pub mod parallel;
 pub mod pipeline;

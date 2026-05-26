@@ -121,7 +121,7 @@ mod tests {
     fn test_parallel_runner_no_worktree_runs_in_project_dir() {
         let tasks = vec![make_task("task-a"), make_task("task-b")];
         let dir = tempdir().unwrap();
-        let resolver = MockProviderResolver { response: "output".to_string() };
+        let resolver = MockProviderResolver { response: "APPROVED\noutput".to_string() };
         let runner = ParallelRunner::new(&tasks, &resolver, dir.path(), 2).with_worktree(false);
         let results = runner.run(|_| {});
         assert_eq!(results.len(), 2);
@@ -165,7 +165,7 @@ mod tests {
     fn test_parallel_runner_events_emitted_in_order() {
         let tasks = vec![make_task("task-a")];
         let dir = tempdir().unwrap();
-        let resolver = MockProviderResolver { response: "out".to_string() };
+        let resolver = MockProviderResolver { response: "APPROVED\nout".to_string() };
         let runner = ParallelRunner::new(&tasks, &resolver, dir.path(), 1).with_worktree(false);
         let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let log_clone = Arc::clone(&log);
