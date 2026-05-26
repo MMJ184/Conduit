@@ -238,8 +238,24 @@ impl<'a> PipelineRunner<'a> {
         let critic_provider: Box<dyn Provider> = self.resolver.resolve(stage)?;
         let critic = Critic::new(critic_provider.as_ref(), self.project_dir);
 
+        // Cache whether the Code stage will be applying diffs to a git working tree.
+        // Used both to gate `git apply` and to reset the tree between retries.
+        let code_in_git = matches!(stage, Stage::Code) && std::process::Command::new("git")
+            .args(["rev-parse", "--git-dir"])
+            .current_dir(self.project_dir)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
         let mut feedback_prefix = String::new();
         for attempt in 0..STAGE_RETRY_BUDGET {
+            // Before each Code-stage retry, revert any diff applied by the
+            // previous (rejected) attempt so the next agent operates against
+            // the same baseline — otherwise diffs sandwich onto each other.
+            if attempt > 0 && code_in_git {
+                self.reset_working_tree_to_head()?;
+            }
+
             let mut prompt = self.build_prompt(stage, reference_docs);
             if !feedback_prefix.is_empty() {
                 prompt = format!(
@@ -256,14 +272,7 @@ impl<'a> PipelineRunner<'a> {
                 // If project_dir is a git repo, require + apply a diff.
                 // If not a git repo, fall back to the prior "agent self-reported"
                 // behaviour so non-git workflows still work.
-                let is_git = std::process::Command::new("git")
-                    .args(["rev-parse", "--git-dir"])
-                    .current_dir(self.project_dir)
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false);
-
-                if is_git {
+                if code_in_git {
                     if let Some(diff_text) = crate::diff::extract_diff_block(&output) {
                         crate::diff::check_diff(&diff_text, self.project_dir)?;
                         crate::diff::apply_diff(&diff_text, self.project_dir)?;
@@ -293,6 +302,25 @@ impl<'a> PipelineRunner<'a> {
                     feedback: verdict.feedback,
                 });
             }
+        }
+        Ok(())
+    }
+
+    fn reset_working_tree_to_head(&self) -> Result<(), ConduitError> {
+        let output = std::process::Command::new("git")
+            .args(["checkout", "HEAD", "--", "."])
+            .current_dir(self.project_dir)
+            .output()
+            .map_err(|e| ConduitError::DiffApplyFailed {
+                reason: format!("git checkout to reset working tree failed to spawn: {}", e),
+            })?;
+        if !output.status.success() {
+            return Err(ConduitError::DiffApplyFailed {
+                reason: format!(
+                    "git checkout HEAD -- . failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            });
         }
         Ok(())
     }
@@ -645,6 +673,99 @@ And some trailing notes."#;
         assert!(
             !prompt.to_lowercase().contains("specialist"),
             "no-specialty prompt should not have specialist persona"
+        );
+    }
+
+    // Regression: when the Code stage's critic rejects attempt 0 (whose diff
+    // has already been applied to the working tree), attempt 1's agent
+    // generates its diff against what it thinks is a clean baseline. Without
+    // a rollback between attempts, attempt 1's diff is applied on top of
+    // attempt 0's changes — either silently producing the wrong content, or
+    // (more often) erroring at `git apply --check` because the baseline no
+    // longer matches.
+    //
+    // The fix: between Code-stage retries, reset the working tree to its
+    // pre-attempt baseline so each attempt's diff operates against the
+    // same starting state.
+    #[test]
+    fn test_code_stage_resets_working_tree_between_critic_rejection_retries() {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Debug)]
+        struct SequencedProvider {
+            responses: Arc<Mutex<Vec<String>>>,
+        }
+        impl Provider for SequencedProvider {
+            fn name(&self) -> &str { "sequenced" }
+            fn invoke(&self, stage: &str, _prompt: &str, _work_dir: &Path) -> Result<String, ConduitError> {
+                let mut r = self.responses.lock().unwrap();
+                if r.is_empty() {
+                    return Err(ConduitError::AgentInvocationFailed {
+                        provider: "sequenced".to_string(),
+                        stage: stage.to_string(),
+                        reason: "response queue exhausted".to_string(),
+                    });
+                }
+                Ok(r.remove(0))
+            }
+        }
+
+        #[derive(Debug)]
+        struct SequencedResolver {
+            responses: Arc<Mutex<Vec<String>>>,
+        }
+        impl ProviderResolver for SequencedResolver {
+            fn resolve(&self, _stage: &Stage) -> Result<Box<dyn Provider>, ConduitError> {
+                Ok(Box::new(SequencedProvider { responses: Arc::clone(&self.responses) }))
+            }
+        }
+
+        let task = make_task("sandwich-test", "regression for diff-sandwich bug");
+        let dir = tempdir().unwrap();
+        init_git_in(dir.path());
+
+        // Seed file_a.txt with "v0", committed so HEAD has the baseline.
+        std::fs::write(dir.path().join("file_a.txt"), "v0\n").unwrap();
+        Command::new("git").args(["add", "file_a.txt"]).current_dir(dir.path()).output().unwrap();
+        Command::new("git").args(["commit", "-m", "seed file_a"]).current_dir(dir.path()).output().unwrap();
+
+        // Pre-populate the first three stage outputs so the pipeline skips
+        // straight to Code (and then Test), keeping the response queue small.
+        let task_dir = dir.path().join(".conduit").join("tasks").join("sandwich-test");
+        std::fs::create_dir_all(&task_dir).unwrap();
+        for s in &["orchestrator.md", "requirements.md", "architecture.md"] {
+            std::fs::write(task_dir.join(s), "seed").unwrap();
+        }
+
+        // Per stage: 1 agent invoke + 1 critic invoke. Code stage takes 2
+        // attempts (reject → approve), Test takes 1 (approve). Total: 6 calls.
+        let responses = vec![
+            // [0] Code attempt 0 agent: diff v0 -> v1
+            "agent attempt 0\n\n```diff\ndiff --git a/file_a.txt b/file_a.txt\n--- a/file_a.txt\n+++ b/file_a.txt\n@@ -1 +1 @@\n-v0\n+v1\n```\n".to_string(),
+            // [1] Code attempt 0 critic: REJECT
+            "REJECTED\n- attempt 0 not specific enough".to_string(),
+            // [2] Code attempt 1 agent: diff v0 -> v2 (assumes clean baseline)
+            "agent attempt 1\n\n```diff\ndiff --git a/file_a.txt b/file_a.txt\n--- a/file_a.txt\n+++ b/file_a.txt\n@@ -1 +1 @@\n-v0\n+v2\n```\n".to_string(),
+            // [3] Code attempt 1 critic: APPROVE
+            "APPROVED".to_string(),
+            // [4] Test stage agent
+            "test agent output".to_string(),
+            // [5] Test stage critic
+            "APPROVED".to_string(),
+        ];
+
+        let resolver = SequencedResolver { responses: Arc::new(Mutex::new(responses)) };
+        let runner = PipelineRunner::new(&task, &resolver, dir.path());
+        runner.run(|_, _, _| {}).expect(
+            "pipeline must succeed: attempt 1's diff should apply against a freshly reset baseline, not on top of attempt 0's already-applied diff"
+        );
+
+        let content = std::fs::read_to_string(dir.path().join("file_a.txt")).unwrap();
+        assert_eq!(
+            content.trim_end_matches(['\n', '\r']),
+            "v2",
+            "file_a.txt must reflect ONLY attempt 1's diff (v2), not the sum of both attempts. Got: {:?}",
+            content
         );
     }
 }

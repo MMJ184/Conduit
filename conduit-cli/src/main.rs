@@ -17,7 +17,15 @@ enum Commands {
         #[arg(long, help = "Overwrite existing global config without prompting")]
         force: bool,
     },
-    /// Run tasks from tasks.toml
+    /// Run tasks from tasks.toml.
+    ///
+    /// Worktree isolation: with multiple tasks at concurrency > 1, each task
+    /// gets its own git worktree under .conduit/work/<task-id>/ so concurrent
+    /// edits don't collide. Single-task or sequential runs (concurrency = 1,
+    /// or only one task in tasks.toml) execute directly in the project root
+    /// — the Code stage will modify your working tree. If a Code-stage diff
+    /// is applied but a downstream stage fails, those changes remain.
+    /// Commit or stash before running if you want a clean recovery point.
     Run {
         #[arg(long, help = "Run a specific task by id")]
         task: Option<String>,
@@ -29,7 +37,7 @@ enum Commands {
         account: Option<String>,
         #[arg(long, help = "Re-run all stages even if .conduit/tasks/<id>/*.md exists")]
         force: bool,
-        #[arg(long, help = "Disable per-task git worktree isolation (shared project dir)")]
+        #[arg(long, help = "Disable per-task git worktree isolation; Code stage edits the project working tree directly")]
         no_worktree: bool,
     },
     /// Validate tasks.toml without running
