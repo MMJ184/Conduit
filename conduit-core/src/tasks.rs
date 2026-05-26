@@ -12,6 +12,8 @@ pub struct Task {
     pub id: String,
     pub description: String,
     pub options: Option<toml::Value>,
+    #[serde(default)]
+    pub specialty: Option<String>,
 }
 
 pub fn load_tasks(dir: &Path) -> Result<Vec<Task>, ConduitError> {
@@ -110,5 +112,30 @@ description = "Duplicate"
 "#).unwrap();
         let err = load_tasks(dir.path()).unwrap_err();
         assert!(matches!(err, ConduitError::DuplicateTaskId(_)));
+    }
+
+    #[test]
+    fn test_load_tasks_with_specialty() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("tasks.toml"), r#"
+[[task]]
+id = "rust-task"
+description = "Build CLI"
+specialty = "rust"
+"#).unwrap();
+        let tasks = load_tasks(dir.path()).unwrap();
+        assert_eq!(tasks[0].specialty.as_deref(), Some("rust"));
+    }
+
+    #[test]
+    fn test_load_tasks_specialty_optional() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("tasks.toml"), r#"
+[[task]]
+id = "any-task"
+description = "Do something"
+"#).unwrap();
+        let tasks = load_tasks(dir.path()).unwrap();
+        assert!(tasks[0].specialty.is_none());
     }
 }

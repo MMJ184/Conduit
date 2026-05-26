@@ -114,6 +114,18 @@ impl<'a> PipelineRunner<'a> {
     }
 
     pub fn build_prompt(&self, stage: &Stage, reference_docs: &str) -> String {
+        let specialty_prefix: String = match self.task.specialty.as_deref() {
+            Some("rust") => "You are a Rust specialist agent. Prefer idiomatic Rust (Result, ?, traits, ownership). Use `cargo` for builds and tests.\n\n".to_string(),
+            Some("python") => "You are a Python specialist agent. Prefer idiomatic Python 3 (type hints, dataclasses, pathlib). Use `pytest` for tests.\n\n".to_string(),
+            Some("typescript") | Some("ts") => "You are a TypeScript specialist agent. Prefer strict mode, explicit types, ESM imports. Use `vitest` or `jest` for tests.\n\n".to_string(),
+            Some("react") => "You are a React specialist agent. Use functional components and hooks. Keep components small and composable. Use TypeScript when the project does.\n\n".to_string(),
+            Some(other) => format!("You are a {} specialist agent.\n\n", other),
+            None => String::new(),
+        };
+        format!("{}{}", specialty_prefix, self.build_prompt_inner(stage, reference_docs))
+    }
+
+    fn build_prompt_inner(&self, stage: &Stage, reference_docs: &str) -> String {
         let ref_section = if reference_docs.is_empty() {
             String::new()
         } else {
@@ -315,7 +327,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn make_task(id: &str, desc: &str) -> Task {
-        Task { id: id.to_string(), description: desc.to_string(), options: None }
+        Task { id: id.to_string(), description: desc.to_string(), options: None, specialty: None }
     }
 
     #[test]
@@ -597,5 +609,42 @@ And some trailing notes."#;
         for stage_json in &["orchestrator.json", "requirements.json", "architecture.json", "code.json", "tests.json"] {
             assert!(task_dir.join(stage_json).exists(), "missing {}", stage_json);
         }
+    }
+
+    #[test]
+    fn test_prompt_includes_specialty_persona_when_set() {
+        let task = Task {
+            id: "t".to_string(),
+            description: "build a thing".to_string(),
+            options: None,
+            specialty: Some("rust".to_string()),
+        };
+        let dir = tempdir().unwrap();
+        let resolver = MockProviderResolver { response: "APPROVED".to_string() };
+        let runner = PipelineRunner::new(&task, &resolver, dir.path());
+        let prompt = runner.build_prompt(&Stage::Code, "");
+        assert!(
+            prompt.to_lowercase().contains("rust"),
+            "Code prompt with specialty=rust should mention Rust; got:\n{}",
+            prompt
+        );
+    }
+
+    #[test]
+    fn test_prompt_no_specialty_has_no_persona_prefix() {
+        let task = Task {
+            id: "t".to_string(),
+            description: "build a thing".to_string(),
+            options: None,
+            specialty: None,
+        };
+        let dir = tempdir().unwrap();
+        let resolver = MockProviderResolver { response: "APPROVED".to_string() };
+        let runner = PipelineRunner::new(&task, &resolver, dir.path());
+        let prompt = runner.build_prompt(&Stage::Code, "");
+        assert!(
+            !prompt.to_lowercase().contains("specialist"),
+            "no-specialty prompt should not have specialist persona"
+        );
     }
 }

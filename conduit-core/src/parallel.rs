@@ -114,7 +114,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn make_task(id: &str) -> Task {
-        Task { id: id.to_string(), description: "test task".to_string(), options: None }
+        Task { id: id.to_string(), description: "test task".to_string(), options: None, specialty: None }
     }
 
     #[test]
