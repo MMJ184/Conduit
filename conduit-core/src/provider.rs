@@ -40,9 +40,14 @@ impl CodexProvider {
     /// when the prompt is long or contains newlines/special characters — which happens
     /// because `codex` on Windows is an npm `.cmd` shim that routes args through cmd.exe.
     pub fn command_args(&self, _prompt: &str) -> Vec<String> {
+        // `--sandbox read-only` prevents Codex from writing files during stages —
+        // conduit applies the Code stage's diff itself via `git apply`. Without this,
+        // Codex with workspace-write would create files during earlier stages and the
+        // Code-stage diff would then fail with "already exists" on `git apply`.
         vec![
             "exec".to_string(),
-            "--full-auto".to_string(),
+            "--sandbox".to_string(),
+            "read-only".to_string(),
             "--skip-git-repo-check".to_string(),
             "-".to_string(),
         ]
@@ -689,16 +694,15 @@ mod tests {
     }
 
     #[test]
-    fn test_codex_provider_includes_full_auto_flag() {
-        // Codex's `--full-auto` enables sandboxed workspace-write without approval prompts —
-        // the non-interactive mode required for subprocess invocation. (`--ask-for-approval`
-        // existed in older Codex versions but was removed by 0.122.0.)
+    fn test_codex_provider_uses_read_only_sandbox() {
+        // Read-only sandbox prevents Codex from writing files itself; conduit applies
+        // the Code-stage diff via `git apply`. Otherwise the agent would create files
+        // during earlier stages and the diff would fail "already exists".
         let provider = CodexProvider { binary: PathBuf::from("codex") };
         let args = provider.command_args("do something");
-        assert!(
-            args.iter().any(|a| a == "--full-auto"),
-            "Codex must run with --full-auto for non-interactive sandboxed execution"
-        );
+        let sandbox_idx = args.iter().position(|a| a == "--sandbox")
+            .expect("Codex must specify --sandbox to prevent file writes");
+        assert_eq!(args[sandbox_idx + 1], "read-only");
     }
 
     #[test]
